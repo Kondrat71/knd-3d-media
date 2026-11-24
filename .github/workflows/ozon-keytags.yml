@@ -23,8 +23,12 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          def walk(nodes,cat=None):
+          def walk(nodes,names=[]):
               for n in nodes:
-                  if n.get('type_name','').lower()=='брелок': print('MATCH',cat,n['type_id'],n['type_name'])
-                  walk(n.get('children',[]),n.get('description_category_id') or cat)
+                  p=names+[n.get('category_name') or n.get('type_name','')]
+                  if n.get('description_category_id') in [200001166,17027899]:print('CAT',n.get('description_category_id'),p,n.get('disabled'))
+                  walk(n.get('children',[]),p)
           walk(api('/v1/description-category/tree',{})['result'])
+          for c in [200001166,17027899]:
+              for a in api('/v1/description-category/attribute',{'description_category_id':c,'type_id':87458885})['result']:
+                  if a.get('is_required') or a['name'] in ['Аннотация','Цвет товара','Материал','Бренд']:print('ATTR',c,a['id'],a['name'],a.get('dictionary_id'),a.get('is_required'))
