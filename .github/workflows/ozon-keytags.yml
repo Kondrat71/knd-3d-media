@@ -1,6 +1,5 @@
 name: Ozon key tags
 on:
-  workflow_dispatch:
   push:
     branches: [main]
     paths: ['.github/workflows/ozon-keytags.yml']
@@ -23,15 +22,7 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          offers=['KND-DOM-DACHA-2','KND-DOM-BLK-1','KND-DACHA-RED-1','KND-DOM-DACHA-BO-2','KND-DOM-DACHA-MIX-4']
-          time.sleep(40)
-          products=api('/v3/product/info/list',{'offer_id':offers})['items']
-          for p in products:print('CARD',p['offer_id'],p['sku'],p.get('model_info'),p['statuses']['status_name'],p.get('errors',[]))
-          for p in api('/v5/product/info/prices',{'filter':{'offer_id':offers,'visibility':'ALL'},'limit':10})['items']:
-              c=p['commissions']
-              print('COST',p['offer_id'],c['sales_percent_fbs'],p['acquiring'],c['fbs_first_mile_max_amount'],c['fbs_direct_flow_trans_max_amount'],c['fbs_deliv_to_customer_amount'],c['fbs_return_flow_amount'])
-          skus=[str(p['sku']) for p in products if p.get('sku')]
-          for row in api('/v1/product/rating-by-sku',{'skus':skus}).get('products',[]):
-              print('RATING',row['sku'],row['rating'],[(x['key'],x['rating']*x['weight']/100) for x in row['groups']])
-          p=next(p for p in products if p['offer_id']==offers[0])
-          print('ORIGINAL',p['statuses'],len(p.get('images',[])),p.get('primary_image'))
+          w=api('/v2/warehouse/list',{'limit':100,'cursor':''})
+          print('WAREHOUSES',list(w),[(x.get('warehouse_id'),x.get('status'),x.get('is_rfbs'),x.get('warehouse_type')) for x in (w.get('warehouses') or w.get('result') or [])])
+          print('STOCK',api('/v2/product/info/stocks-by-warehouse/fbs',{'offer_id':['KND-DOM-DACHA-2'],'limit':100,'cursor':''}))
+          print('PRICE',api('/v5/product/info/prices',{'filter':{'offer_id':['KND-DOM-DACHA-2'],'visibility':'ALL'},'limit':1})['items'][0]['price']['price'])
