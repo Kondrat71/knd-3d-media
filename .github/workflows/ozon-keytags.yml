@@ -22,19 +22,20 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          offer='KND-DOM-DACHA-2'
+          if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':raise SystemExit('One-time allocation')
+          offers=['KND-DOM-BLK-1','KND-DACHA-RED-1','KND-DOM-DACHA-BO-2','KND-DOM-DACHA-MIX-4']
           wid=1020005032543350
           def inventory():
-              return api('/v2/product/info/stocks-by-warehouse/fbs',{'offer_id':[offer],'limit':100,'cursor':''})['products']
-          if os.environ.get('GITHUB_RUN_ATTEMPT')!='1':raise SystemExit('One-time allocation; use a fresh inventory count')
-          if any(int(x.get('present',0)) or int(x.get('reserved',0)) for x in inventory()):raise SystemExit('Inventory changed')
-          p=api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items'][0]
-          assert float(p['price']['price'])==299
-          res=api('/v2/products/stocks',{'stocks':[{'offer_id':offer,'warehouse_id':wid,'stock':50}]})
-          print('UPDATE',res,flush=True)
-          if not all(x['updated'] for x in res['result']):raise SystemExit('Update rejected')
-          for i in range(10):
+              return api('/v2/product/info/stocks-by-warehouse/fbs',{'offer_id':offers,'limit':100,'cursor':''})['products']
+          prior=inventory()
+          if any(int(x.get('present',0)) or int(x.get('reserved',0)) for x in prior):raise SystemExit('Existing allocation found')
+          result=api('/v2/products/stocks',{'stocks':[{'offer_id':o,'warehouse_id':wid,'stock':10} for o in offers]})['result']
+          print('UPDATE',result,flush=True)
+          if len(result)!=4 or not all(x['updated'] for x in result):raise SystemExit('Review partial update')
+          for i in range(12):
               time.sleep(5)
-              rows=inventory()
-              print('READBACK',rows,flush=True)
-              if any(int(x.get('present',0))==50 for x in rows):break
+              rows={x['offer_id']:(x['free_stock'],x['reserved']) for x in inventory() if int(x['warehouse_id'])==wid}
+              print('VERIFIED',rows,flush=True)
+              if rows=={o:(10,0) for o in offers}:break
+          else:raise SystemExit('Verification pending')
+          
