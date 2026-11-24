@@ -1,0 +1,38 @@
+name: Check Ozon catalog access
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/ozon-catalog-check.yml']
+permissions: {}
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify catalog access
+        env:
+          OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
+          OZON_API_KEY: ${{ secrets.OZON_API_KEY }}
+        shell: python
+        run: |
+          import http.client
+          import json
+          import os
+          import sys
+          for name in ("OZON_CLIENT_ID", "OZON_API_KEY"):
+              if not os.environ.get(name, "").strip():
+                  sys.exit("Missing Actions secret: " + name)
+          conn = http.client.HTTPSConnection("api-seller.ozon.ru", timeout=25)
+          headers = {"Client-Id": os.environ["OZON_CLIENT_ID"].strip(),
+                     "Api-Key": os.environ["OZON_API_KEY"].strip(),
+                     "Content-Type": "application/json"}
+          body = json.dumps({"filter": {"visibility": "ALL"}, "limit": 1})
+          conn.request("POST", "/v3/product/list", body=body, headers=headers)
+          response = conn.getresponse()
+          if response.status != 200:
+              sys.exit("Catalog request failed: HTTP " + str(response.status))
+          result = json.load(response).get("result", {})
+          if not isinstance(result.get("items", []), list) or "total" not in result:
+              sys.exit("Unexpected catalog response")
+          print("Verified Ozon catalog access")
