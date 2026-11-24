@@ -23,36 +23,8 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          cat,typ=17027899,87458885
-          common={'description_category_id':cat,'type_id':typ}
-          attrs=[]
-          def dictionary(a,terms,required=True):
-              values=[]
-              for term in terms:
-                  found=api('/v1/description-category/attribute/values/search',{**common,'attribute_id':a,'value':term,'limit':30}).get('result',[])
-                  best=next((v for v in found if v['value'].casefold()==term.casefold() or (a==22232 and term in v['value'])),None)
-                  if best:values.append({'dictionary_value_id':best['id']})
-              if values:attrs.append({'id':a,'values':values})
-              elif required:raise RuntimeError(f'No dictionary match for {a}: {terms}')
-          def literal(a,s):attrs.append({'id':a,'values':[{'value':s}]})
-          dictionary(85,['Нет бренда'])
-          dictionary(9163,['Мужской','Женский'])
-          dictionary(22232,['7117900000'])
-          dictionary(10096,['красный','черный','белый'],False)
-          dictionary(5309,['Пластик','Металл'],False)
-          attrs.append({'id':8229,'values':[{'dictionary_value_id':typ}]})
-          literal(23536,'false')
-          literal(4191,'Две бирки для ключей от дома и дачи. На чёрной — белая надпись «ДОМ» и домик, на красной — «ДАЧА» и ёлка. Разная форма помогает различать ключи на ощупь. Каждая пластиковая бирка снабжена отдельной металлической цепочкой с разъёмным кольцом. Размер бирки без цепочки 56 × 20 × 3,8 мм. В комплекте два брелка.')
-          item={**common,'offer_id':'KND-DOM-DACHA-2','name':'Брелки-бирки для ключей «Дом» и «Дача» с цепочками, набор 2 шт.','attributes':attrs,'currency_code':'RUB','vat':'0','price':'299','depth':100,'width':50,'height':30,'dimension_unit':'mm','weight':30,'weight_unit':'g','images':[f'https://raw.githubusercontent.com/Kondrat71/knd-3d-media/main/photos/keytags/{n}.jpg' for n in range(1,5)]}
-          for url in item['images']:
-              with urllib.request.urlopen(url,timeout=15) as photo:
-                  if photo.read(2)!=b'\xff\xd8':raise RuntimeError('Photo unavailable')
-          response=api('/v3/product/import',{'items':[item]})
-          task=response['result']['task_id']
-          print('IMPORT',task,flush=True)
-          for attempt in range(12):
-              time.sleep(5)
-              rows=api('/v1/product/import/info',{'task_id':task})['result']['items']
-              for row in rows:print('STATUS',row.get('status'),row.get('product_id'),row.get('errors'),flush=True)
-              if rows and all(r.get('status') not in ['pending','processing'] for r in rows):break
-          
+          offer='KND-DOM-DACHA-2'
+          product=api('/v3/product/info/list',{'offer_id':[offer]})['items'][0]
+          print('PRODUCT',product.get('id'), product.get('sku'),product.get('statuses'),len(product.get('images',[])))
+          prices=api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items']
+          for p in prices:print('FEES',p.get('commissions'),p.get('acquiring'),p.get('price',{}).get('price'))
