@@ -23,17 +23,71 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          offers=['KND-DOM-DACHA-2','KND-DOM-BLK-1','KND-DACHA-RED-1','KND-DOM-DACHA-BO-2','KND-DOM-DACHA-MIX-4']
-          for i in range(4):
-              products=api('/v3/product/info/list',{'offer_id':offers})['items']
-              for p in products:print('CARD',p['offer_id'],p.get('sku'),p.get('model_info'),p.get('statuses',{}).get('status_name'),len(p.get('images',[])),p.get('errors',[]),flush=True)
-              if len(products)==len(offers) and all(p.get('sku') for p in products):break
-              time.sleep(12)
-          prices=api('/v5/product/info/prices',{'filter':{'offer_id':offers,'visibility':'ALL'},'limit':10})
-          for p in prices['items']:print('FEES',p['offer_id'],p.get('commissions'),p.get('acquiring'),flush=True)
-          skus=[str(p['sku']) for p in products if p.get('sku')]
-          if skus:
-              data=api('/v1/product/rating-by-sku',{'skus':skus})
-              for row in data.get('products',data.get('result',[])):
-                  print('RATING',row.get('sku'),row.get('rating'),flush=True)
-                  if str(row.get('sku'))==str(next((p.get('sku') for p in products if p.get('offer_id')==offers[0]),'')): print('DETAIL',row,flush=True)
+          cat,typ=17027899,87458885
+          common={'description_category_id':cat,'type_id':typ}
+          attrs=[]
+          def dictionary(a,terms,required=True):
+              values=[]
+              for term in terms:
+                  found=api('/v1/description-category/attribute/values/search',{**common,'attribute_id':a,'value':term,'limit':30}).get('result',[])
+                  best=next((v for v in found if v['value'].casefold()==term.casefold() or (a==22232 and term in v['value'])),None)
+                  if best:values.append({'dictionary_value_id':best['id']})
+              if values:attrs.append({'id':a,'values':values})
+              elif required:raise RuntimeError(f'No dictionary match for {a}: {terms}')
+          def literal(a,s):attrs.append({'id':a,'values':[{'value':s}]})
+          
+          dictionary(85,['Нет бренда'])
+          dictionary(9163,['Мужской','Женский'])
+          dictionary(22232,['7117900000'])
+          dictionary(5309,['Пластик','Металл'],False)
+          dictionary(4389,['Россия'],False)
+          dictionary(10016,['Повседневный'],False)
+          attrs.append({'id':8229,'values':[{'dictionary_value_id':typ}]})
+          literal(23536,'false')
+          literal(9048,'KND Метки для ключей')
+          literal(4382,'56 × 20 × 3,8')
+          base_attrs=attrs.copy()
+          root='https://raw.githubusercontent.com/Kondrat71/knd-3d-media/main/photos/keytags/'
+          items=[]
+          variants=[
+          ('classic','KND-DOM-DACHA-2',2,299,'«Дом» и «Дача»','Чёрный «ДОМ» и красная «ДАЧА»',['черный','красный'],30,30),
+          ('black','KND-DOM-BLK-1',1,199,'«Дом»','Чёрная бирка «ДОМ» с контуром домика',['черный'],20,30),
+          ('red','KND-DACHA-RED-1',1,199,'«Дача»','Красная бирка «ДАЧА» с ёлкой',['красный'],20,30),
+          ('duo','KND-DOM-DACHA-BO-2',2,299,'«Дом» и «Дача»','Синий «ДОМ» и оранжевая «ДАЧА»',['синий','оранжевый'],30,30),
+          ('four','KND-DOM-DACHA-MIX-4',4,549,'«Дом» и «Дача»','Два брелка «ДОМ» (чёрный и синий) и два «ДАЧА» (красный и оранжевый)',['черный','синий','красный','оранжевый'],60,60)]
+          for key,offer,n,price,label,contents,colors,weight,height in variants:
+              attrs=base_attrs.copy()
+              meta={a['id']:a for a in api('/v1/description-category/attribute',common)['result']}
+              for aid,words in [(9390,['Взрослая']), (5289,['Без вставок']), (4386,['Пакет']), (9912,['Надписи']), (9725,['Дом и дача']), (23171,['#брелок_для_ключей','#бирка_для_ключей','#3D_печать'])]:
+                  if meta[aid].get('dictionary_id'):
+                      dictionary(aid,words,False)
+                  elif aid==23171:
+                      literal(aid,' '.join(words))
+                  else:
+                      literal(aid,words[0])
+              dictionary(10096,colors)
+              literal(9661,str(n))
+              literal(4384,contents+'. У каждой бирки своё кольцо с цепочкой.')
+              desc=contents+'. Белые выпуклые буквы помогают быстро найти нужную связку. Название и значок напечатаны вместе с основой. Размер пластиковой части 56 × 20 мм, толщина с надписью 3,8 мм. На поверхности видны тонкие линии послойной 3D-печати. Металлическое разъёмное кольцо соединено с биркой короткой цепочкой: его удобно надеть на ключ от двери или на запасную связку. Для крепления слегка разведите край кольца и проведите ключ по витку. Брелки поставляются в защитном пузырчатом пакете.'
+              literal(4191,desc)
+              def block(pic,title,caption):
+                  url=root+pic+'.jpg'
+                  return {'img':{'src':url,'srcMobile':url,'alt':title},'title':{'content':[title],'size':'size4','align':'left','color':'color1'},'text':{'content':[caption],'size':'size2','align':'left','color':'color1'},'reverse':False}
+              stockpic='1' if key=='classic' else key
+              rich={'version':0.3,'content':[{'widgetName':'raShowcase','type':'chess','blocks':[block(stockpic,'Что в комплекте',contents+'. На каждой бирке есть металлическая цепочка и кольцо.'),block('dimensions','Размер бирки','Длина 56 мм, ширина 20 мм, толщина с буквами 3,8 мм. Размер указан без цепочки и кольца.')]}]}
+              literal(11254,json.dumps(rich,ensure_ascii=False))
+              gallery=['hero-'+key,stockpic,'dimensions','use']+(['2','3','4','shapes'] if key=='classic' else [])
+              name=('Брелок-бирка' if n==1 else 'Брелки-бирки')+' для ключей '+label+' с цепочкой, '+str(n)+' шт.'
+              items.append({**common,'offer_id':offer,'name':name,'attributes':attrs,'currency_code':'RUB','vat':'0','price':str(price),'depth':100,'width':50,'height':height,'dimension_unit':'mm','weight':weight,'weight_unit':'g','images':[root+m+'.jpg' for m in gallery]})
+          for item in items:
+              if item['offer_id']=='KND-DOM-DACHA-2':
+                  item['complex_attributes']=[{'attributes':[{'complex_id':100001,'id':21841,'values':[{'value':root+'classic.mp4'}]},{'complex_id':100001,'id':21837,'values':[{'value':'Брелки Дом и Дача: размер, форма и крепление'}]}]}]
+              with urllib.request.urlopen(item['images'][0],timeout=20) as r:
+                  assert r.read(2)==b'\xff\xd8'
+          task=api('/v3/product/import',{'items':items})['result']['task_id']
+          print('TASK',task,flush=True)
+          for i in range(12):
+              time.sleep(5)
+              rows=api('/v1/product/import/info',{'task_id':task})['result']['items']
+              print('RESULT',[(r['offer_id'],r.get('status'),r.get('product_id'),r.get('errors')) for r in rows],flush=True)
+              if len(rows)==len(items) and all(r.get('status') not in ('pending','processing') for r in rows):break
