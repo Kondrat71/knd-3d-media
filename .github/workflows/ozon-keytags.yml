@@ -23,10 +23,8 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
-          res=api('/v1/product/import/prices',{'prices':[{'offer_id':'KND-DOM-DACHA-MIX-4','price':'300','min_price':'300','currency_code':'RUB','auto_action_enabled':'DISABLED'}]})
-          print('PRICE UPDATE',res,flush=True)
-          time.sleep(20)
           offers=['KND-DOM-DACHA-2','KND-DOM-BLK-1','KND-DACHA-RED-1','KND-DOM-DACHA-BO-2','KND-DOM-DACHA-MIX-4']
+          time.sleep(40)
           products=api('/v3/product/info/list',{'offer_id':offers})['items']
           for p in products:print('CARD',p['offer_id'],p['sku'],p.get('model_info'),p['statuses']['status_name'],p.get('errors',[]))
           for p in api('/v5/product/info/prices',{'filter':{'offer_id':offers,'visibility':'ALL'},'limit':10})['items']:
@@ -35,3 +33,5 @@ jobs:
           skus=[str(p['sku']) for p in products if p.get('sku')]
           for row in api('/v1/product/rating-by-sku',{'skus':skus}).get('products',[]):
               print('RATING',row['sku'],row['rating'],[(x['key'],x['rating']*x['weight']/100) for x in row['groups']])
+          p=next(p for p in products if p['offer_id']==offers[0])
+          print('ORIGINAL',p['statuses'],len(p.get('images',[])),p.get('primary_image'))
