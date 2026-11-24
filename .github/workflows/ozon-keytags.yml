@@ -24,7 +24,8 @@ jobs:
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
           offer='KND-DOM-DACHA-2'
-          product=api('/v3/product/info/list',{'offer_id':[offer]})['items'][0]
-          print('PRODUCT',product.get('id'), product.get('sku'),product.get('statuses'),len(product.get('images',[])))
-          prices=api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items']
-          for p in prices:print('FEES',p.get('commissions'),p.get('acquiring'),p.get('price',{}).get('price'))
+          for a in api('/v1/description-category/attribute',{'description_category_id':17027899,'type_id':87458885})['result']:
+              print(a['id'],a['name'],a.get('is_aspect'))
+          p=api('/v3/product/info/list',{'offer_id':[offer]})['items'][0]
+          print('STATUS',p.get('statuses'),p.get('errors'))
+          print('PRICE',api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items'][0]['commissions'])
