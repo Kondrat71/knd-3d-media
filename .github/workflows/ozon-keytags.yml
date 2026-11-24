@@ -23,6 +23,9 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
+          res=api('/v1/product/import/prices',{'prices':[{'offer_id':'KND-DOM-DACHA-MIX-4','price':'300','min_price':'300','currency_code':'RUB','auto_action_enabled':'DISABLED'}]})
+          print('PRICE UPDATE',res,flush=True)
+          time.sleep(20)
           offers=['KND-DOM-DACHA-2','KND-DOM-BLK-1','KND-DACHA-RED-1','KND-DOM-DACHA-BO-2','KND-DOM-DACHA-MIX-4']
           products=api('/v3/product/info/list',{'offer_id':offers})['items']
           for p in products:print('CARD',p['offer_id'],p['sku'],p.get('model_info'),p['statuses']['status_name'],p.get('errors',[]))
