@@ -23,6 +23,8 @@ jobs:
           for name in ("OZON_CLIENT_ID", "OZON_API_KEY"):
               if not os.environ.get(name, "").strip():
                   sys.exit("Missing Actions secret: " + name)
+          if not os.environ["OZON_CLIENT_ID"].strip().isascii() or not os.environ["OZON_CLIENT_ID"].strip().isdigit():
+              sys.exit("Client ID format: expected decimal digits")
           conn = http.client.HTTPSConnection("api-seller.ozon.ru", timeout=25)
           headers = {"Client-Id": os.environ["OZON_CLIENT_ID"].strip(),
                      "Api-Key": os.environ["OZON_API_KEY"].strip(),
@@ -31,7 +33,18 @@ jobs:
           conn.request("POST", "/v3/product/list", body=body, headers=headers)
           response = conn.getresponse()
           if response.status != 200:
-              sys.exit("Catalog request failed: HTTP " + str(response.status))
+              detail = response.read(4096).decode(errors="replace").lower()
+              if "ip" in detail and any(s in detail for s in ("allowed", "whitelist", "network")):
+                  reason = "network restriction"
+              elif "client" in detail and "key" in detail:
+                  reason = "credential pair"
+              elif "api-key" in detail or "api key" in detail:
+                  reason = "API key"
+              elif "client" in detail:
+                  reason = "client identifier"
+              else:
+                  reason = "unspecified"
+              sys.exit(f"Catalog request failed: HTTP {response.status}, category: {reason}")
           result = json.load(response).get("result", {})
           if not isinstance(result.get("items", []), list) or "total" not in result:
               sys.exit("Unexpected catalog response")
