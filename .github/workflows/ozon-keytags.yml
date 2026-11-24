@@ -1,0 +1,30 @@
+name: Ozon key tags
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/ozon-keytags.yml']
+permissions: {}
+jobs:
+  item:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare key tags
+        shell: python
+        env:
+          CID: ${{ secrets.OZON_CLIENT_ID }}
+          KEY: ${{ secrets.OZON_API_KEY }}
+        run: |
+          import os, json, urllib.request, urllib.error, time
+          def api(path, obj):
+              req=urllib.request.Request('https://api-seller.ozon.ru'+path,data=json.dumps(obj).encode(),headers={'Client-Id':os.environ['CID'].strip(),'Api-Key':os.environ['KEY'].strip(),'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(str(e.code)+' '+e.read(1200).decode(errors='replace'))
+          def walk(nodes,cat=None):
+              for n in nodes:
+                  if n.get('type_name','').lower()=='брелок': print('MATCH',cat,n['type_id'],n['type_name'])
+                  walk(n.get('children',[]),n.get('description_category_id') or cat)
+          walk(api('/v1/description-category/tree',{})['result'])
