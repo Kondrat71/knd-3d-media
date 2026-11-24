@@ -1,0 +1,32 @@
+name: Extract KND 3D photos
+on:
+  push:
+    paths:
+      - 'KND_3D_фотографии_для_GitHub.zip'
+      - '.github/workflows/extract-knd-photos.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Extract original photographs
+        run: |
+          unzip -o 'KND_3D_фотографии_для_GitHub.zip' 'photos/*'
+          test -s photos/buran/instagram-buran.jpg
+          test -s photos/buran/original-1.png
+          test -s photos/buran/original-2.png
+          test -s photos/buran/original-3.png
+      - name: Commit extracted photos
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add photos/buran
+          if ! git diff --cached --quiet; then
+            git commit -m 'Extract original KND 3D photographs'
+            git push
+          fi
