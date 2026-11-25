@@ -13,7 +13,7 @@ ALLOWED = {
     "/v3/product/list", "/v3/product/info/list", "/v5/product/info/prices",
     "/v2/product/info/stocks-by-warehouse/fbs", "/v4/posting/fbs/list", "/v1/returns/list",
     "/v1/search-queries/text", "/v1/analytics/product-queries", "/v1/analytics/data", "/v1/finance/accrual/by-day", "/v1/finance/accrual/types",
-    "/v1/finance/accrual/postings", "/v1/finance/cash-flow-statement/list",
+    "/v1/finance/accrual/postings", "/v1/finance/cash-flow-statement/list", "/v1/finance/balance",
 }
 MOSCOW = ZoneInfo("Europe/Moscow")
 now = datetime.now(MOSCOW)
@@ -81,6 +81,8 @@ def utc(dt):return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds"
 def cutoff(first,last):
     start=datetime.combine(first,day_time.min,MOSCOW)
     end=min(datetime.combine(last,day_time.max,MOSCOW),now)
+    if last == periods["previous"][1]:
+        end = now - timedelta(days=28)
     return utc(start),utc(end)
 def orders(first,last):
     a,b=cutoff(first,last)
@@ -107,7 +109,10 @@ def analytics(first,last,metrics):
     rows=[];offset=0
     while True:
         resp=post("/v1/analytics/data",{"date_from":str(first),"date_to":str(last),"dimension":["sku"],"metrics":metrics,"limit":1000,"offset":offset})["result"]
-        batch=resp["data"];rows+=batch
+        batch=resp["data"]
+        if any(len(row.get("metrics", [])) != len(metrics) for row in batch) or len(resp.get("totals", [])) != len(metrics):
+            raise ApiError("incomplete_metrics", "Response omitted requested metric columns")
+        rows+=batch
         if len(batch)<1000:return {"metrics":metrics,"rows":rows,"totals":resp.get("totals",[])}
         offset+=1000
 def cash(first,last):
@@ -118,14 +123,24 @@ def cash(first,last):
         pages_out.append(r)
         if page>=int(r.get("page_count") or 1):return pages_out
         page+=1
+def balance(first,last):
+    return post("/v1/finance/balance",{"date_from":str(first),"date_to":str(last)})
+out["balance"]={}
+out["funnel_checks"]={}
 for label,(first,last) in periods.items():
     out["orders"][label]=attempt("orders."+label,lambda:orders(first,last))
     out["returns"][label]=attempt("returns."+label,lambda:returns(first,last))
     out["cash"][label]=attempt("cash."+label,lambda:cash(first,last))
+    out["balance"][label]=attempt("balance."+label,lambda:balance(first,last))
     combined=["hits_view_search","hits_view_pdp","hits_tocart_pdp","hits_tocart","ordered_units","delivered_units","returns","cancellations","revenue"]
     funnel=attempt("funnel."+label,lambda:analytics(first,last,combined))
     if funnel is None:
         funnel=attempt("funnel.basic."+label,lambda:analytics(first,last,["ordered_units","revenue"]))
+        # Query each unavailable column separately in case this account allows a subset.
+        checks={}
+        for metric in ("hits_view_search","hits_view_pdp","hits_tocart_pdp","delivered_units","returns","cancellations"):
+            checks[metric]=attempt("metric."+label+"."+metric,lambda:analytics(first,last,[metric]))
+        out["funnel_checks"][label]=checks
     out["funnel"][label]=funnel
 out["finance"]["types"]=attempt("finance.types",lambda:post("/v1/finance/accrual/types",{}))
 by_day=out["finance"]["by_day"]
