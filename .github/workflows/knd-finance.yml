@@ -1,0 +1,55 @@
+name: KND finance to Google Sheets
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Check reads only. Sync writes yesterday and today to the KND_Accruals tab."
+        type: choice
+        options: [check, sync]
+        default: check
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: knd-finance-sheets
+  cancel-in-progress: false
+
+jobs:
+  finance:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Prepare the reviewed exporter without credentials
+        shell: bash
+        run: |
+          set -eu
+          export_dir="$RUNNER_TEMP/knd-finance"
+          mkdir -m 700 "$export_dir"
+          cd "$export_dir"
+          curl --fail --silent --show-error --location --max-time 90 \
+            https://codeload.github.com/sotchenkov/ozon_to_google_sheets/tar.gz/de7768f981a604d0bf5a30d59afae45f4166a9c5 -o source.tgz
+          echo '7da786031577d1e5ed8ee6b2fa15eddcc5f22583746a84703922678843280a32  source.tgz' | sha256sum --check --status
+          tar --strip-components=1 -xzf source.tgz
+          python3 -m venv installer
+          echo 'uv==0.12.5 --hash=sha256:3e195ccf1ed60c8bb24a6447ce306441a4181d54b602407e09bc56e963911c15' > installer.requirements
+          installer/bin/python -m pip install --quiet --no-cache-dir --only-binary=:all: --require-hashes -r installer.requirements
+          UV_NO_MANAGED_PYTHON=1 installer/bin/uv sync --locked --no-dev --no-install-project --python /usr/bin/python3
+      - name: Check permissions or sync accruals
+        env:
+          FINANCE_MODE: ${{ inputs.mode }}
+          OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
+          OZON_FINANCE_READONLY_KEY: ${{ secrets.OZON_FINANCE_READONLY_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          cd "$RUNNER_TEMP/knd-finance"
+          PYTHONPATH="$PWD/src" .venv/bin/python "$GITHUB_WORKSPACE/scripts/knd_finance.py"
