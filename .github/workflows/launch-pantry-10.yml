@@ -1,0 +1,47 @@
+name: Launch ten pantry clip sets
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/launch-pantry-10.yml']
+permissions: {}
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Catalogue
+        env:
+          CID: ${{ secrets.OZON_CLIENT_ID }}
+          KEY: ${{ secrets.OZON_API_KEY }}
+        shell: python
+        run: |
+          import os,json,urllib.request,urllib.error,time
+          def api(path, body):
+              req=urllib.request.Request('https://api-seller.ozon.ru'+path,json.dumps(body).encode(),{'Client-Id':os.environ['CID'],'Api-Key':os.environ['KEY'],'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(str(e.code)+' '+e.read(1500).decode(errors='replace'))
+          offer='KND-CLIP-6-OLIVE'
+          wid=1020005032543350
+          def stock():
+              rows=api('/v2/product/info/stocks-by-warehouse/fbs',{'offer_id':[offer],'limit':100,'cursor':''})['products']
+              return next((r for r in rows if int(r['warehouse_id'])==wid),{})
+          def card():
+              p=api('/v3/product/info/list',{'offer_id':[offer]})['items'][0]
+              return p['statuses'].get('status_name')
+          if os.environ.get('GITHUB_RUN_ATTEMPT')!='1':raise SystemExit('Single launch only')
+          r=stock()
+          if r.get('reserved',0):raise SystemExit('Reserved units detected; reconcile first')
+          if int(r.get('free_stock') or 0)!=10:
+              prices=api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items'][0]['price']
+              assert float(prices['price'])==299 and float(prices['min_price'])==299
+              res=api('/v2/products/stocks',{'stocks':[{'offer_id':offer,'warehouse_id':wid,'stock':10}]})['result']
+              print('ACCEPTED',res,flush=True)
+              assert len(res)==1 and res[0]['updated']
+          for i in range(22):
+              r=stock()
+              status=card()
+              print('CHECK',r.get('free_stock'),r.get('reserved'),status,flush=True)
+              if int(r.get('free_stock') or 0)+int(r.get('reserved') or 0)==10 and status=='Продаётся':break
+              time.sleep(10)
