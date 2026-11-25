@@ -1,0 +1,19 @@
+# Refreshing the seller workbook
+
+The scheduled job names one private workbook ID and one private build archive ID. Resolve the current versions before starting. Reuse the workbook ID for every update. The archive contains the specific workbook builder and its initial research inputs.
+
+## Each daily refresh
+
+1. Materialize both files in a private temporary working directory. Record the workbook version. Keep the original unchanged while preparing a candidate.
+2. Use `scripts/knd_snapshot_client.py prepare` to generate a fresh local recipient. Update only `analytics/recipient.pem` with its public certificate to invoke the read-only seller workflow, or dispatch the workflow with the matching certificate already installed. Match the run to the certificate commit by exact SHA. Wait for success. Use `scripts/knd_snapshot_client.py decode` against its logs, run ID and local recipient to produce `work/store/live.json`. The private key, extracted payload and account reports belong only in the private working directory.
+3. Extract the builder archive into the working directory. Its entry point is `work/store/book/build.mjs`. Copy the `.mjs` modules to a fresh temporary directory with a `node_modules` symlink to `$CODEX_PRIMARY_RUNTIME_NODE_MODULES`. From the working directory run `KND_PRIOR_XLSX=/absolute/path/to/current.xlsx "$CODEX_PRIMARY_RUNTIME_NODE" /absolute/path/to/temp/build.mjs`. The prior workbook carries the current rates, historical closed costs, manual inventory, printer commitments and research decisions into the next version. Compare all six sheets before upload. For a missing catalog, incompatible schema, unresolved conflicting duplicate or lost manual entry, keep the previous version and report the reason. On a partial endpoint, mark that section incomplete and retain history; report the last confirmed observation.
+4. Reconcile signed per-day totals to the downloaded daily settlements and an independent Ozon report when available. Split components of a parent accrual sum to its signed total. A second detailed endpoint can explain a charge, never add it twice. Confirm the most recent and comparative reporting windows. Inspect the working formulas and inspect any key marked `сверить с отчётом`. A parent missing from an otherwise complete day requires an authoritative check before recording reversal. Closed production costs stay on the original line; investigate the disposition of returned stock separately.
+5. Validate the exported `outputs/knd_store/KND_3D_Analytics.xlsx` by importing it again. Compare its sheet list, stable keys, manual inputs, recent and older history, cash comparison and the audit log. Replace the same private workbook using the version read at step 1 as `expected_current_version`. On conflict, materialize the newer version, replay the refresh and validate. Retry from the latest original if a scheduled run is interrupted; idempotent replay must not duplicate operations. Keep decrypted data, workbook and business assumptions out of this repository and workflow logs.
+
+## Weekly review
+
+Start from the latest version of the same workbook. Update the two research sheets in place. Match each existing idea by its name and each test by article ID, retain history of decisions, and append dated evidence and results. Reconcile any concurrent daily update using a fresh materialization and version check. New ideas, test decisions and manual stock counts belong to the private workbook.
+
+## Local validation
+
+With the runtime dependency link set up, run `"$CODEX_PRIMARY_RUNTIME_NODE" verify.mjs /private/temp/test.xlsx` from the helper folder. The test uses synthetic records and checks conflicting/repeated keys, revised settlements, partial days, preservation of historical costs, manual inputs and spreadsheet round-trip behavior.

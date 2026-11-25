@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { Workbook, SpreadsheetFile, FileBlob } from '@oai/artifact-tool';
+import { mergeLedger } from './merge-ledger.mjs';
+import { finishOperations, readPriorOperations } from './history.mjs';
+import { preserveEdits } from './preserve.mjs';
+
+const old = { date:'2020-01-01',id:'A',key:'A|sale',post:'test',kind:'sale',qty:1,amt:120,sale:120,localCost:12,tax:0,labor:5,wear:2,other:3,asof:'2020-01-01', note:'Document' };
+const fee = {...old,key:'A|fee',kind:'fee',amt:-10,qty:null,sale:null,localCost:null,tax:null,labor:null,wear:null,other:null};
+const control={asof:'2020-01-03',coveredDays:['2020-01-01']};
+assert.equal(mergeLedger([old],[],control).missing.length,1);
+assert.equal(mergeLedger([old],[],{...control,coveredDays:[]}).missing.length,0);
+const corrected={...old,amt:112,sale:112,localCost:999};
+const one=mergeLedger([old,fee],[corrected,corrected],control);
+assert.equal(one.rows.length,2); assert.equal(one.revisions.length,2);
+assert.equal(one.rows[0].localCost,12);assert.equal(one.rows[1].amt,0);
+assert.equal(mergeLedger(one.rows,[corrected],control).revisions.length,0);
+assert.throws(()=>mergeLedger([],[old,corrected],control));
+
+const names=['Товары и себестоимость','Принтеры и загрузка','Идеи','Тесты','Операции Ozon'];
+const books=[Workbook.create(),Workbook.create()];
+for (const b of books) for (const n of names) b.worksheets.add(n);
+const [a,b]=books, get=(wb,n)=>wb.worksheets.getItem(n);
+for (const wb of books) {
+  get(wb,names[0]).getRange('AJ6:AN6').values=[['input',40,'unit',45000,'user']];
+  get(wb,names[0]).getRange('A7:B7').values=[['synthetic','single']];
+  get(wb,names[1]).getRange('A7:B7').values=[['test printer','idle']];
+  for (const n of names.slice(2,4)) get(wb,n).getRange('A1').values=[['test']];
+}
+get(a,names[0]).getRange('S7:T7').values=[[12,45001]];
+get(a,names[0]).getRange('AK6').values=[[99]];
+get(a,names[1]).getRange('B7').values=[['manual']];
+get(a,names[2]).getRange('D22').formulas=[['=2+2']];
+get(a,names[3]).getRange('J9').values=[['retained']];
+preserveEdits(a,b);
+assert.equal(get(b,names[0]).getRange('S7').values[0][0],12);
+assert.equal(get(b,names[0]).getRange('AK6').values[0][0],99);
+assert.equal(get(b,names[1]).getRange('B7').values[0][0],'manual');
+assert.equal(get(b,names[2]).getRange('D22').formulas[0][0],'=2+2');
+assert.equal(get(b,names[3]).getRange('J9').values[0][0],'retained');
+const ops = get(b,names[4]);
+ops.getRange('A8:R8').values=[[43831,'test',null,1,'test',120,0,null,'source','A','A|sale','posting',120,12,0,5,2,3]];
+finishOperations(ops,{out:[old],revisions:[['2020','A|sale','revision','before','after']]},{asof:'2020'});
+const disk = process.argv[2];
+await (await SpreadsheetFile.exportXlsx(b)).save(disk);
+const reload = await SpreadsheetFile.importXlsx(await FileBlob.load(disk));
+const history = readPriorOperations(get(reload,names[4]));
+assert.equal(history.rows[0].tax,0); assert.equal(history.rows[0].date,'2020-01-01');
+assert.equal(history.revisions.length,1);
+assert.equal(get(reload,names[2]).getRange('D22').formulas[0][0],'=2+2');
+console.log('duplicate, late revision, missing days, retired components, historical costs, manual inputs, and export/import OK');
