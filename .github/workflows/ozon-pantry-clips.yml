@@ -57,19 +57,16 @@ jobs:
           for url in images:
               with urllib.request.urlopen(url,timeout=20) as response: assert response.read(2)==b'\xff\xd8'
           item={**common,'offer_id':offer,'name':'Зажимы для пакетов с подписями продуктов, 7,5 см, 6 шт.','attributes':attrs,'images':images,'currency_code':'RUB','vat':'0','dimension_unit':'mm','weight_unit':'g','complex_attributes':[{'attributes':[{'complex_id':100001,'id':21841,'values':[{'value':root+'overview.mp4'}]},{'complex_id':100001,'id':21837,'values':[{'value':'Кухонные зажимы — состав набора, размеры и применение'}]}]}]}
-          existing=api('/v3/product/info/list',{'offer_id':[offer]}).get('items',[])
-          if existing:
-              p=existing[0]
-              print('CARD',p.get('id'),p.get('sku'),p.get('statuses'),len(p.get('images',[])))
-              if p.get('sku'):
-                  print('RATING',api('/v1/product/rating-by-sku',{'skus':[str(p['sku'])]}).get('products',[]))
-              for row in api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1}).get('items',[]):
-                  print('FEES',row.get('commissions'))
-          else:
-              task=api('/v3/product/import',{'items':[item]})['result']['task_id']
-              print('TASK',task,flush=True)
-              for i in range(10):
-                  time.sleep(5)
-                  rows=api('/v1/product/import/info',{'task_id':task})['result']['items']
-                  print('IMPORT',[(r.get('status'),r.get('product_id'),r.get('errors')) for r in rows],flush=True)
-                  if rows and all(r.get('status') not in ('pending','processing') for r in rows):break
+          item.update(depth=100,width=50,height=30)
+          task=api('/v3/product/import',{'items':[item]})['result']['task_id']
+          for _ in range(10):
+              time.sleep(5)
+              rows=api('/v1/product/import/info',{'task_id':task})['result']['items']
+              if rows and all(x.get('status') not in ('pending','processing') for x in rows):
+                  print('UPDATE',[(x['product_id'],x['status'],[(e['field'],e['code']) for e in x.get('errors',[])]) for x in rows])
+                  break
+          p=api('/v3/product/info/list',{'offer_id':[offer]})['items'][0]
+          print('CARD',p.get('sku'),p.get('statuses'),len(p.get('images',[])))
+          if p.get('sku'):
+              for row in api('/v1/product/rating-by-sku',{'skus':[str(p['sku'])]}).get('products',[]):
+                  print('RATING',row.get('rating'),[(x['key'],x['rating']) for x in row.get('groups',[])])
