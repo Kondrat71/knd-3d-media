@@ -1,0 +1,23 @@
+name: KND catalog text update
+on:
+  push:
+    branches: ['codex/knd-descriptions-20261125']
+    paths: ['catalog_edit/request.json']
+permissions:
+  contents: read
+concurrency:
+  group: knd-description-update-20261125
+  cancel-in-progress: false
+jobs:
+  catalog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check or update annotations and hashtags
+        env:
+          OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
+          OZON_API_KEY: ${{ secrets.OZON_API_KEY }}
+        run: /usr/bin/python3 catalog_edit/knd_catalog_edit.py catalog_edit/request.json
