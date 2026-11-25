@@ -48,7 +48,7 @@ jobs:
           literal(23536,'false')
           literal(9048,'KND Зажимы для пакетов с подписями')
           literal(4384,'6 зажимов — по одному с надписями РИС, САХАР, КОФЕ, МАКАРОНЫ, МУКА и ГРЕЧКА.')
-          literal(4191,'Набор из шести кухонных зажимов для открытых пакетов с крупами, мукой, сахаром, макаронами и кофе. На оливковой основе каждого зажима напечатано название продукта белыми выпуклыми буквами. Сложите верхний край пакета и надвиньте зажим сбоку вдоль сгиба. Надпись выступает над краем, поэтому её видно спереди. Чтобы открыть пакет, сдвиньте зажим обратно. Длина зажима 7,5 см, ширина 1,6 см. Зажим крепится снаружи упаковки.')
+          literal(4191,'Набор из шести кухонных зажимов для открытых пакетов с крупами, мукой, сахаром, макаронами и кофе. На оливковой основе каждого зажима напечатано название продукта белыми выпуклыми буквами. Сложите верхний край пакета и надвиньте зажим сбоку вдоль сгиба. Надпись выступает над краем, поэтому её видно спереди. Чтобы открыть пакет, сдвиньте зажим обратно. Длина зажима 7,5 см, ширина 1,6 см. Зажим крепится снаружи упаковки. Оттенок оливкового пластика может немного отличаться от изображения на фото в зависимости от партии, освещения и настроек экрана.')
           def block(pic,title,caption):
               img=root+pic+'.jpg'
               return {'img':{'src':img,'srcMobile':img,'alt':title},'title':{'content':[title],'size':'size4','align':'left','color':'color1'},'text':{'content':[caption],'size':'size2','align':'left','color':'color1'},'reverse':False}
@@ -76,3 +76,9 @@ jobs:
               print('FEES',row.get('commissions'),row.get('acquiring'),row.get('price'))
           if p.get('sku'):
               print('RATINGS',api('/v1/product/rating-by-sku',{'skus':[str(p['sku'])]}).get('products',[]))
+          for attempt in range(6):
+              rows=api('/v4/product/info/attributes',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1}).get('result',[])
+              ok=any('Оттенок оливкового пластика' in v.get('value','') for row in rows for a in row.get('attributes',[]) if a.get('id')==4191 for v in a.get('values',[]))
+              print('COLOR_NOTE_VERIFIED',ok,flush=True)
+              if ok:break
+              time.sleep(8)
