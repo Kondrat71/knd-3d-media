@@ -1,0 +1,54 @@
+name: Inspect Ozon accrual access
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/ozon-accrual-access.yml']
+permissions: {}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Identify roles that cover the accrual exporter
+        env:
+          CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
+          API_KEY: ${{ secrets.OZON_API_KEY }}
+        shell: python
+        run: |
+          import http.client
+          import json
+          import os
+          import re
+
+          headers = {
+              "Client-Id": os.environ["CLIENT_ID"].strip(),
+              "Api-Key": os.environ["API_KEY"].strip(),
+              "Content-Type": "application/json",
+          }
+          conn = http.client.HTTPSConnection("api-seller.ozon.ru", timeout=20)
+          conn.request("POST", "/v1/roles", body="{}", headers=headers)
+          response = conn.getresponse()
+          if response.status != 200:
+              raise SystemExit(f"Role lookup returned HTTP {response.status}")
+          roles = json.load(response).get("roles")
+          if not isinstance(roles, list) or not roles:
+              raise SystemExit("Ozon returned no role mapping")
+          required = {"/v1/finance/accrual/" + suffix for suffix in ("by-day", "types", "postings")}
+          matches = 0
+          paths_seen = False
+          for role in roles:
+              methods = role["methods"]
+              if not isinstance(methods, list) or not all(isinstance(m, str) for m in methods):
+                  raise SystemExit("Unrecognized Ozon method format")
+              paths = {m.removeprefix("POST ").strip() for m in methods}
+              paths_seen |= any(re.match(r"^/v[0-9]+/", m) for m in paths)
+              coverage = required & paths
+              if coverage:
+                  name = re.sub(r"[^\w /()-]", "", str(role["name"]))[:60]
+                  nonfinance = sum(m != "/v1/roles" and not re.match(r"^/v\d+/(?:report/)?finance/", m) for m in paths)
+                  print(f"{name}: {len(coverage)}/3 accrual methods; other non-financial methods: {nonfinance}")
+                  matches += 1
+          if not paths_seen:
+              raise SystemExit("Method identifiers are not HTTP paths; scope needs manual inspection")
+          print(f"Matching assigned roles: {matches}")
