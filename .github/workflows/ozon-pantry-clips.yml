@@ -23,13 +23,48 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1500).decode(errors='replace'))
-          def walk(items,cat=0):
-              for x in items:
-                  c=x.get('description_category_id') or cat
-                  if 'зажим' in x.get('type_name','').lower() and ('кухон' in x['type_name'].lower() or 'пакет' in x['type_name'].lower()):
-                      t=x['type_id']
-                      print('CATEGORY',c,t,x['type_name'])
-                      for a in api('/v1/description-category/attribute',{'description_category_id':c,'type_id':t})['result']:
-                          print(a['id'],a['name'],a['type'],a.get('dictionary_id'),a.get('is_required'))
-                  walk(x.get('children',[]),c)
-          walk(api('/v1/description-category/tree',{})['result'])
+          common={'description_category_id':17027933,'type_id':92362}
+          offer='KND-CLIP-6-OLIVE'
+          root='https://raw.githubusercontent.com/Kondrat71/knd-3d-media/a178b7ab8a603a2682259f29102736fa52f5f0e9/photos/pantry-clips/'
+          attrs=[]
+          def literal(a,s):attrs.append({'id':a,'values':[{'value':s}]})
+          def match(a,terms):
+              for term in terms:
+                  vals=api('/v1/description-category/attribute/values/search',{**common,'attribute_id':a,'value':term,'limit':30}).get('result',[])
+                  best=next((v for v in vals if v['value'].casefold()==term.casefold() or (a==22232 and term in v['value'])),None)
+                  if best:
+                      attrs.append({'id':a,'values':[{'dictionary_value_id':best['id']}]})
+                      return
+              print('Unmatched attribute',a)
+          match(85,['Нет бренда'])
+          match(6383,['PET-G пластик','Пластик'])
+          match(4389,['Россия'])
+          match(10096,['оливковый','зеленый'])
+          match(12171,['7,5','7.5'])
+          match(23332,['Зажим для пакета','Зажим для пакетов'])
+          match(22232,['3924100000'])
+          attrs.append({'id':8229,'values':[{'dictionary_value_id':92362}]})
+          literal(8513,'6')
+          literal(23536,'false')
+          literal(9048,'KND Зажимы для пакетов с подписями')
+          literal(4384,'6 зажимов — по одному с надписями РИС, САХАР, КОФЕ, МАКАРОНЫ, МУКА и ГРЕЧКА.')
+          literal(4191,'Набор из шести кухонных зажимов для открытых пакетов с крупами, мукой, сахаром, макаронами и кофе. На оливковой основе каждого зажима напечатано название продукта белыми выпуклыми буквами. Сложите верхний край пакета и надвиньте зажим сбоку вдоль сгиба. Надпись выступает над краем, поэтому её видно спереди. Чтобы открыть пакет, сдвиньте зажим обратно. Длина зажима 7,5 см, ширина 1,6 см. Зажим крепится снаружи упаковки.')
+          def block(pic,title,caption):
+              img=root+pic+'.jpg'
+              return {'img':{'src':img,'srcMobile':img,'alt':title},'title':{'content':[title],'size':'size4','align':'left','color':'color1'},'text':{'content':[caption],'size':'size2','align':'left','color':'color1'},'reverse':False}
+          literal(11254,json.dumps({'version':0.3,'content':[{'widgetName':'raShowcase','type':'chess','blocks':[block('02','На пачке кофе','Надпись видна над сгибом пакета.'),block('03','Как надеть зажим','Подверните верх пакета. Надвиньте зажим сбоку вдоль сгиба.')]}]},ensure_ascii=False))
+          images=[root+f'{n:02}.jpg' for n in range(1,11)]
+          for url in images:
+              with urllib.request.urlopen(url,timeout=20) as response: assert response.read(2)==b'\xff\xd8'
+          item={**common,'offer_id':offer,'name':'Зажимы для пакетов с подписями продуктов, 7,5 см, 6 шт.','attributes':attrs,'images':images,'currency_code':'RUB','vat':'0','dimension_unit':'mm','weight_unit':'g','complex_attributes':[{'attributes':[{'complex_id':100001,'id':21841,'values':[{'value':root+'overview.mp4'}]},{'complex_id':100001,'id':21837,'values':[{'value':'Кухонные зажимы — состав набора, размеры и применение'}]}]}]}
+          existing=api('/v3/product/info/list',{'offer_id':[offer]}).get('items',[])
+          if existing:
+              print('EXISTING',[(a.get('id'),a.get('statuses')) for a in existing])
+          else:
+              task=api('/v3/product/import',{'items':[item]})['result']['task_id']
+              print('TASK',task,flush=True)
+              for i in range(10):
+                  time.sleep(5)
+                  rows=api('/v1/product/import/info',{'task_id':task})['result']['items']
+                  print('IMPORT',[(r.get('status'),r.get('product_id'),r.get('errors')) for r in rows],flush=True)
+                  if rows and all(r.get('status') not in ('pending','processing') for r in rows):break
