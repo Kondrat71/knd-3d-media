@@ -29,7 +29,8 @@ jobs:
           headers = {"Client-Id": os.environ["OZON_CLIENT_ID"].strip(),
                      "Api-Key": os.environ["OZON_API_KEY"].strip(),
                      "Content-Type": "application/json"}
-          body = json.dumps({"filter": {"visibility": "ALL"}, "limit": 1})
+          offer = "KND-DOM-DACHA-2"
+          body = json.dumps({"filter": {"offer_id": [offer], "visibility": "ALL"}, "limit": 1})
           conn.request("POST", "/v3/product/list", body=body, headers=headers)
           response = conn.getresponse()
           if response.status != 200:
@@ -46,6 +47,7 @@ jobs:
                   reason = "unspecified"
               sys.exit(f"Catalog request failed: HTTP {response.status}, category: {reason}")
           result = json.load(response).get("result", {})
-          if not isinstance(result.get("items", []), list) or "total" not in result:
-              sys.exit("Unexpected catalog response")
-          print("Verified Ozon catalog access")
+          items = result.get("items", [])
+          if len(items) != 1 or items[0].get("offer_id") != offer:
+              sys.exit("The expected catalog item was not returned")
+          print(f"Verified one Ozon offer: {offer}")
