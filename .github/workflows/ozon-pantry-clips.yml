@@ -59,7 +59,12 @@ jobs:
           item={**common,'offer_id':offer,'name':'Зажимы для пакетов с подписями продуктов, 7,5 см, 6 шт.','attributes':attrs,'images':images,'currency_code':'RUB','vat':'0','dimension_unit':'mm','weight_unit':'g','complex_attributes':[{'attributes':[{'complex_id':100001,'id':21841,'values':[{'value':root+'overview.mp4'}]},{'complex_id':100001,'id':21837,'values':[{'value':'Кухонные зажимы — состав набора, размеры и применение'}]}]}]}
           existing=api('/v3/product/info/list',{'offer_id':[offer]}).get('items',[])
           if existing:
-              print('EXISTING',[(a.get('id'),a.get('statuses')) for a in existing])
+              p=existing[0]
+              print('CARD',p.get('id'),p.get('sku'),p.get('statuses'),len(p.get('images',[])))
+              if p.get('sku'):
+                  print('RATING',api('/v1/product/rating-by-sku',{'skus':[str(p['sku'])]}).get('products',[]))
+              for row in api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1}).get('items',[]):
+                  print('FEES',row.get('commissions'))
           else:
               task=api('/v3/product/import',{'items':[item]})['result']['task_id']
               print('TASK',task,flush=True)
