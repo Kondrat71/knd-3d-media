@@ -1,6 +1,7 @@
 """Submit an authorized text-only update for the seven approved KND listings."""
 
 import base64
+import gzip
 import hashlib
 import hmac
 import http.client
@@ -77,7 +78,8 @@ def seal(receiver, rows, mode):
     private = X25519PrivateKey.generate()
     public = X25519PublicKey.from_public_bytes(bytes.fromhex(receiver))
     nonce = os.urandom(12)
-    encrypted = AESGCM(shared_key(private, public)).encrypt(nonce, json.dumps(rows).encode(), CONTEXT + mode.encode())
+    data = gzip.compress(json.dumps(rows, ensure_ascii=False).encode())
+    encrypted = AESGCM(shared_key(private, public)).encrypt(nonce, data, CONTEXT + mode.encode())
     return {"mode": mode, "sender": private.public_key().public_bytes_raw().hex(),
             "nonce": nonce.hex(), "ciphertext": base64.b64encode(encrypted).decode("ascii")}
 
@@ -87,7 +89,7 @@ def open_request(request):
     decoded = AESGCM(shared_key(receiver_key(), sender)).decrypt(
         bytes.fromhex(request["nonce"]), base64.b64decode(request["ciphertext"]), CONTEXT + request["mode"].encode()
     )
-    items = json.loads(decoded)
+    items = json.loads(gzip.decompress(decoded))
     if len(items) != len(EXPECTED) or {row["offer_id"]: row["sku"] for row in items} != EXPECTED:
         raise ValueError("Approved product list differs from expected SKUs")
     for row in items:
