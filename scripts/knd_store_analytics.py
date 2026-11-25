@@ -22,12 +22,18 @@ periods = {"current": [today-timedelta(days=27), today], "previous": [today-time
 failed = {}
 out = {"asof":now.isoformat(), "periods":periods,"failures":failed,"orders":{},"returns":{},"funnel":{},"cash":{},"finance":{"by_day":{}}}
 headers = {"Client-Id":os.environ["OZON_CLIENT_ID"].strip(), "Api-Key":os.environ["OZON_API_KEY"].strip(), "Content-Type":"application/json"}
+last_analytics_request = None
 class ApiError(Exception):
     pass
 def post(path, data):
+    global last_analytics_request
     if path not in ALLOWED:
         raise ValueError("Unknown endpoint")
     for attempt in range(4):
+        if path == "/v1/analytics/data":
+            if last_analytics_request is not None:
+                time.sleep(max(0, 60.1-(time.monotonic()-last_analytics_request)))
+            last_analytics_request = time.monotonic()
         conn=http.client.HTTPSConnection("api-seller.ozon.ru",timeout=30)
         try:
             conn.request("POST",path,json.dumps(data),headers)
@@ -57,7 +63,10 @@ def pages(path,body,array,token="cursor",root=None,flag="has_next"):
         page=data[array];rows.extend(page)
         follow=data.get(token)
         if flag in data and not data[flag]:break
-        if not follow or not page:break
+        if not follow or not page:
+            if data.get(flag):
+                raise ValueError("Page continuation is missing")
+            break
         if follow in seen:raise ValueError("Repeated page token")
         seen.add(follow);body[token]=follow
     return rows
@@ -136,11 +145,6 @@ for label,(first,last) in periods.items():
     funnel=attempt("funnel."+label,lambda:analytics(first,last,combined))
     if funnel is None:
         funnel=attempt("funnel.basic."+label,lambda:analytics(first,last,["ordered_units","revenue"]))
-        # Query each unavailable column separately in case this account allows a subset.
-        checks={}
-        for metric in ("hits_view_search","hits_view_pdp","hits_tocart_pdp","delivered_units","returns","cancellations"):
-            checks[metric]=attempt("metric."+label+"."+metric,lambda:analytics(first,last,[metric]))
-        out["funnel_checks"][label]=checks
     out["funnel"][label]=funnel
 out["finance"]["types"]=attempt("finance.types",lambda:post("/v1/finance/accrual/types",{}))
 by_day=out["finance"]["by_day"]
