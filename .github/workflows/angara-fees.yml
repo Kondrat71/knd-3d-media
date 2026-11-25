@@ -1,0 +1,39 @@
+name: Angara category and fees
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/angara-fees.yml']
+permissions: {}
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Catalogue
+        env:
+          CID: ${{ secrets.OZON_CLIENT_ID }}
+          KEY: ${{ secrets.OZON_API_KEY }}
+        shell: python
+        run: |
+          import os,json,urllib.request,urllib.error,time
+          def api(path, body):
+              req=urllib.request.Request('https://api-seller.ozon.ru'+path,json.dumps(body).encode(),{'Client-Id':os.environ['CID'],'Api-Key':os.environ['KEY'],'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(str(e.code)+' '+e.read(1500).decode(errors='replace'))
+          offer='0002'
+          a=api('/v4/product/info/attributes',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['result'][0]
+          cat,t=a['description_category_id'],a['type_id']
+          print('ITEM',a['name'],cat,t)
+          def walk(items,names=[]):
+              for x in items:
+                  label=x.get('category_name') or x.get('type_name','')
+                  path=names+[label]
+                  if x.get('type_id')==t or x.get('type_name','').lower()=='сборная модель':
+                      print('PATH',path,x.get('type_id'))
+                  walk(x.get('children',[]),path)
+          walk(api('/v1/description-category/tree',{})['result'])
+          r=api('/v5/product/info/prices',{'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1})['items'][0]
+          print('PRICE',r['price'],r['commissions'],r.get('acquiring'))
