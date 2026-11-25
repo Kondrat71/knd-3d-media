@@ -127,9 +127,13 @@ def discovered_fields(products_by_offer):
                                 "language": "RU"})["result"]
         description = [f for f in fields if f["id"] == 4191 and f["name"].strip().lower() == "аннотация"]
         hashtags = [f for f in fields if f["name"].strip().lower() in {"хештеги", "хэштеги"}]
-        if len(description) != 1 or len(hashtags) != 1:
+        if len(description) != 1 or len(hashtags) > 1:
             report("CATEGORY_FIELDS", {"category": category, "annotations": len(description), "hashtags": len(hashtags)})
             raise ValueError("Could not identify both catalog fields")
+        if not hashtags:
+            # This store already uses the universal hashtag field as a single
+            # space-delimited string, even if it is absent from a category's schema.
+            hashtags = [{"id": 23171, "is_collection": False, "max_value_count": 30}]
         for field in (description[0], hashtags[0]):
             if field.get("dictionary_id") or field.get("attribute_complex_id"):
                 raise ValueError("Expected free-text, non-complex attributes")
@@ -151,16 +155,15 @@ def desired_fields(row, fields):
     description, hashtags = fields
     if hashtags.get("max_value_count") and len(row["tags"]) > int(hashtags["max_value_count"]):
         raise ValueError("Approved hashtags exceed a product category limit")
-    if not hashtags.get("is_collection"):
-        raise ValueError("Expected Ozon to allow individual hashtags")
-    return {description["id"]: [row["description"]], hashtags["id"]: row["tags"]}
+    tags = row["tags"] if hashtags.get("is_collection") else [" ".join(row["tags"])]
+    return {description["id"]: [row["description"]], hashtags["id"]: tags}
 
 
 def matches(product, desired):
     description, hashtags = desired.items()
     annotation_ok = list(map(normalize, current_values(product, description[0]))) == list(map(normalize, description[1]))
     tokens = [tag.lower().lstrip("#") for value in current_values(product, hashtags[0]) for tag in value.split()]
-    hashtag_ok = set(tokens) == {tag.lower().lstrip("#") for tag in hashtags[1]}
+    hashtag_ok = set(tokens) == {tag.lower().lstrip("#") for value in hashtags[1] for tag in value.split()}
     return {"description": annotation_ok, "hashtags": hashtag_ok}
 
 
@@ -233,6 +236,9 @@ def main(request):
         report("AVAILABLE_FIELDS", {offer: [(f["id"], f.get("is_collection"), f.get("max_value_count"))
                                              for f in pair] for offer, pair in fields.items()})
         report("CATALOG_STATUS", summaries(state))
+        report("EXISTING_CONTENT", {offer: {"tag_values": len(current_values(row, 23171)),
+                                            "rich_content": bool(current_values(row, 11254))}
+                                    for offer, row in live.items()})
     elif request["mode"] == "verify":
         approved = open_request(request)
         report("MATCH_AFTER", verify(live, {offer: desired_fields(row, fields[offer])
