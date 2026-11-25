@@ -36,6 +36,16 @@ jobs:
           name='Сборная модель ракеты-носителя «Ангара-А5»'
           description='«Ангара-А5» — сборная модель российской ракеты-носителя для коллекции космической техники. Детали напечатаны на 3D-принтере. В облике ракеты легко узнать центральный блок и четыре боковых блока вокруг него. Белый и светло-серый цвета подчёркивают форму корпуса. Перед сборкой разложите детали и сверьте их с инструкцией, затем соединяйте в указанной последовательности. Готовую модель можно рассмотреть со всех сторон и поставить на полку рядом с другими моделями ракет. Набор подойдёт в подарок любителю космонавтики, которому интересен сам процесс сборки.'
           changes=[{'offer_id':clip,'attributes':[att(23171,tags)]},{'offer_id':'0002','attributes':[att(23171,ats),att(4191,description),att(11254,json.dumps(rich,ensure_ascii=False)),att(4180,name)]}]
+          ang=changes[1]['attributes']
+          desc=next(x for x in ang if x['id']==4191)['values'][0]
+          desc['value']='Сборная модель ракеты-носителя «Ангара-А5» в масштабе 1:144. Высота собранной модели — 37,5 см, вес — 169 г. Детали напечатаны на 3D-принтере из PETG. В набор входят детали ракеты, подставка с названием модели и декали для оформления корпуса. Для сборки понадобится клей, его покупают отдельно. '+desc['value'][desc['value'].index('В облике ракеты'):]
+          ang.append(att(4384,'Детали сборной модели, подставка, декали. Клей приобретается отдельно.'))
+          next(x for x in ang if x['id']==4180)['values'][0]['value']='Сборная модель ракеты-носителя «Ангара-А5», 1:144, 37,5 см, с подставкой и декалями'
+          for aid,value in [(21841,'https://raw.githubusercontent.com/Kondrat71/knd-3d-media/23c25f6f45e4dc6854249314dcc96107d150085a/photos/angara/overview.mp4'),(21837,'Ангара-А5 — собранная модель, подставка и детали набора')]:
+              entry=att(aid,value)
+              entry['complex_id']=100001
+              ang.append(entry)
+          changes=[changes[1]]
           print('UPDATE',api('/v1/product/attributes/update',{'items':changes}))
           for i in range(8):
               time.sleep(8)
@@ -47,4 +57,10 @@ jobs:
                   print('VERIFY',row['offer_id'],row['name'],saved,11254 in attrs,flush=True)
                   ok=ok and saved==(tags if row['offer_id']==clip else ats)
               if len(rows)==2 and ok:break
-          print('SCORE',[(r['sku'],r['rating']) for r in api('/v1/product/rating-by-sku',{'skus':['5944250800','6476210340']})['products']])
+          for i in range(12):
+              row=api('/v1/product/rating-by-sku',{'skus':['5944250800']})['products'][0]
+              print('ANGARA_RATING',row['rating'],[(g['key'],g['rating']) for g in row['groups']],flush=True)
+              if row['rating']>=80:break
+              time.sleep(8)
+          p=api('/v3/product/info/list',{'offer_id':['0002']})['items'][0]
+          print('FINAL',p.get('name'),p.get('statuses'),p.get('errors'))
