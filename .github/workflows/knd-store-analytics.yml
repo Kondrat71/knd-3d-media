@@ -1,0 +1,21 @@
+name: KND private analytics snapshot
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['analytics/recipient.pem']
+permissions:
+  contents: read
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Read Seller API and encrypt locally
+        env:
+          OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
+          OZON_API_KEY: ${{ secrets.OZON_API_KEY }}
+        run: python3 scripts/knd_store_analytics.py
