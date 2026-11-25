@@ -23,23 +23,28 @@ jobs:
                   with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
               except urllib.error.HTTPError as e:
                   raise RuntimeError(str(e.code)+' '+e.read(1500).decode(errors='replace'))
-          items=[]
-          last=''
-          while True:
-              page=api('/v3/product/list',{'filter':{'visibility':'ALL'},'last_id':last,'limit':100})['result']
-              items+=page['items']
-              cursor=page.get('last_id')
-              if not cursor or cursor==last or len(page['items'])<100:break
-              last=cursor
-          for start in range(0,len(items),50):
-              offers=[x['offer_id'] for x in items[start:start+50]]
-              products=api('/v3/product/info/list',{'offer_id':offers})['items']
-              values=api('/v4/product/info/attributes',{'filter':{'offer_id':offers,'visibility':'ALL'},'limit':100})['result']
-              for p in products:
-                  print('PRODUCT',p['offer_id'],p['name'],p.get('sku'),len(p.get('images',[])),p.get('statuses',{}).get('status_name'),[(e.get('code'),e.get('field')) for e in p.get('errors',[])])
-              for a in values:
-                  print('ATTR',a['offer_id'],[(v['id'],v['values']) for v in a.get('attributes',[]) if v['id']==23171 or ('ангар' in a.get('name','').lower() and v['id'] in [4191,4384,9048,10096,6383,85,11254])][:20])
-              skus=[str(p['sku']) for p in products if p.get('sku')]
-              if skus:
-                  for r in api('/v1/product/rating-by-sku',{'skus':skus}).get('products',[]):
-                      print('SCORE',r['sku'],r['rating'],[(x['key'],x['rating']) for x in r['groups']])
+          def att(i,v):return {'id':i,'values':[{'value':v}]}
+          clip='KND-CLIP-6-OLIVE'
+          a=api('/v3/product/info/list',{'offer_id':['0002']})['items'][0]
+          imgs=list(dict.fromkeys((a.get('primary_image') or [])+a.get('images',[])))
+          print('ANGARA_MEDIA',imgs)
+          def block(pic,title,caption):
+              return {'img':{'src':pic,'srcMobile':pic,'alt':title},'title':{'content':[title],'size':'size4','align':'left','color':'color1'},'text':{'content':[caption],'size':'size2','align':'left','color':'color1'},'reverse':False}
+          rich={'version':0.3,'content':[{'widgetName':'raShowcase','type':'chess','blocks':[block(imgs[0],'Сборная модель «Ангара-А5»','Макет российской ракеты-носителя для любителей космонавтики и стендового моделизма.'),block(imgs[1],'Сборка и коллекция','Соберите модель по инструкции. Готовую ракету можно поставить на полку рядом с другими моделями космической техники.')]}]}
+          tags='#порядок_на_кухне #хранение_круп #организация_кухни #хранение_кофе #кухонные_мелочи'
+          ats='#ангара_а5 #космонавтика #стендовый_моделизм #модели_ракет #космическая_техника #коллекционные_модели #3д_печать'
+          name='Сборная модель ракеты-носителя «Ангара-А5»'
+          description='«Ангара-А5» — сборная модель российской ракеты-носителя для коллекции космической техники. Детали напечатаны на 3D-принтере. В облике ракеты легко узнать центральный блок и четыре боковых блока вокруг него. Белый и светло-серый цвета подчёркивают форму корпуса. Перед сборкой разложите детали и сверьте их с инструкцией, затем соединяйте в указанной последовательности. Готовую модель можно рассмотреть со всех сторон и поставить на полку рядом с другими моделями ракет. Набор подойдёт в подарок любителю космонавтики, которому интересен сам процесс сборки.'
+          changes=[{'offer_id':clip,'attributes':[att(23171,tags)]},{'offer_id':'0002','attributes':[att(23171,ats),att(4191,description),att(11254,json.dumps(rich,ensure_ascii=False)),att(4180,name)]}]
+          print('UPDATE',api('/v1/product/attributes/update',{'items':changes}))
+          for i in range(8):
+              time.sleep(8)
+              rows=api('/v4/product/info/attributes',{'filter':{'offer_id':[clip,'0002'],'visibility':'ALL'},'limit':2})['result']
+              ok=True
+              for row in rows:
+                  attrs={x['id']:x['values'] for x in row.get('attributes',[])}
+                  saved=attrs.get(23171,[{}])[0].get('value','')
+                  print('VERIFY',row['offer_id'],row['name'],saved,11254 in attrs,flush=True)
+                  ok=ok and saved==(tags if row['offer_id']==clip else ats)
+              if len(rows)==2 and ok:break
+          print('SCORE',[(r['sku'],r['rating']) for r in api('/v1/product/rating-by-sku',{'skus':['5944250800','6476210340']})['products']])
