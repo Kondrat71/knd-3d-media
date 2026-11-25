@@ -159,12 +159,49 @@ def desired_fields(row, fields):
     return {description["id"]: [row["description"]], hashtags["id"]: tags}
 
 
+def body_slots(node):
+    if isinstance(node, dict):
+        text = node.get("text")
+        if isinstance(text, dict) and isinstance(text.get("content"), list):
+            content = text["content"]
+            if content and all(isinstance(line, str) for line in content):
+                yield text
+        for key, value in node.items():
+            if key != "text":
+                yield from body_slots(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from body_slots(item)
+
+
+def rich_with_approved_text(product, description):
+    existing = current_values(product, 11254)
+    if len(existing) != 1:
+        return None
+    model = json.loads(existing[0])
+    if not isinstance(model, dict) or not isinstance(model.get("content"), list):
+        return None
+    slots = list(body_slots(model["content"]))
+    if not slots:
+        return None
+    paragraphs = [p.strip() for p in description.split("\n\n") if p.strip()]
+    count = min(len(slots), len(paragraphs))
+    for slot, paragraph in zip(slots[:count - 1], paragraphs[:count - 1]):
+        slot["content"] = [paragraph]
+    slots[count - 1]["content"] = paragraphs[count - 1:]
+    return json.dumps(model, ensure_ascii=False, separators=(",", ":"))
+
+
 def matches(product, desired):
-    description, hashtags = desired.items()
+    description, hashtags = list(desired.items())[:2]
     annotation_ok = list(map(normalize, current_values(product, description[0]))) == list(map(normalize, description[1]))
     tokens = [tag.lower().lstrip("#") for value in current_values(product, hashtags[0]) for tag in value.split()]
     hashtag_ok = set(tokens) == {tag.lower().lstrip("#") for value in hashtags[1] for tag in value.split()}
-    return {"description": annotation_ok, "hashtags": hashtag_ok}
+    result = {"description": annotation_ok, "hashtags": hashtag_ok}
+    if 11254 in desired:
+        stored = current_values(product, 11254)
+        result["visible_description"] = len(stored) == 1 and json.loads(stored[0]) == json.loads(desired[11254][0])
+    return result
 
 
 def summaries(rows):
@@ -184,8 +221,19 @@ def verify(live, desired):
     return {offer: matches(product, desired[offer]) for offer, product in live.items()}
 
 
+def build_desired(approved, live, category_fields):
+    desired = {}
+    for offer, row in approved.items():
+        fields = desired_fields(row, category_fields[offer])
+        rich = rich_with_approved_text(live[offer], row["description"])
+        if rich is not None:
+            fields[11254] = [rich]
+        desired[offer] = fields
+    return desired
+
+
 def apply(approved, live, category_fields):
-    desired = {offer: desired_fields(row, category_fields[offer]) for offer, row in approved.items()}
+    desired = build_desired(approved, live, category_fields)
     before = verify(live, desired)
     items = []
     for offer, fields in desired.items():
@@ -193,10 +241,13 @@ def apply(approved, live, category_fields):
             continue
         updates = [{"id": field, "complex_id": 0,
                     "values": [{"dictionary_value_id": 0, "value": value} for value in values]}
-                   for field, values in fields.items()]
+                   for field, values in fields.items()
+                   if not before[offer]["description" if field == 4191 else
+                                        "visible_description" if field == 11254 else "hashtags"]]
         items.append({"offer_id": offer, "attributes": updates})
     report("MATCH_BEFORE", before)
     if not items:
+        report("MATCH_AFTER", before)
         report("CATALOG_STATUS", summaries(catalog(live)))
         return
     task_id = int(post(UPDATE, {"items": items}, allow_update=True)["task_id"])
@@ -241,8 +292,7 @@ def main(request):
                                     for offer, row in live.items()})
     elif request["mode"] == "verify":
         approved = open_request(request)
-        report("MATCH_AFTER", verify(live, {offer: desired_fields(row, fields[offer])
-                                           for offer, row in approved.items()}))
+        report("MATCH_AFTER", verify(live, build_desired(approved, live, fields)))
         report("CATALOG_STATUS", summaries(state))
     elif request["mode"] == "apply":
         apply(open_request(request), live, fields)
