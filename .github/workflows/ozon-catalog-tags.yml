@@ -1,0 +1,45 @@
+name: Ozon catalogue tags
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/ozon-catalog-tags.yml']
+permissions: {}
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Catalogue
+        env:
+          CID: ${{ secrets.OZON_CLIENT_ID }}
+          KEY: ${{ secrets.OZON_API_KEY }}
+        shell: python
+        run: |
+          import os,json,urllib.request,urllib.error,time
+          def api(path, body):
+              req=urllib.request.Request('https://api-seller.ozon.ru'+path,json.dumps(body).encode(),{'Client-Id':os.environ['CID'],'Api-Key':os.environ['KEY'],'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(str(e.code)+' '+e.read(1500).decode(errors='replace'))
+          items=[]
+          last=''
+          while True:
+              page=api('/v3/product/list',{'filter':{'visibility':'ALL'},'last_id':last,'limit':100})['result']
+              items+=page['items']
+              cursor=page.get('last_id')
+              if not cursor or cursor==last or len(page['items'])<100:break
+              last=cursor
+          for start in range(0,len(items),50):
+              offers=[x['offer_id'] for x in items[start:start+50]]
+              products=api('/v3/product/info/list',{'offer_id':offers})['items']
+              values=api('/v4/product/info/attributes',{'filter':{'offer_id':offers,'visibility':'ALL'},'limit':100})['result']
+              for p in products:
+                  print('PRODUCT',p['offer_id'],p['name'],p.get('sku'),len(p.get('images',[])),p.get('statuses',{}).get('status_name'),[(e.get('code'),e.get('field')) for e in p.get('errors',[])])
+              for a in values:
+                  print('ATTR',a['offer_id'],[(v['id'],v['values']) for v in a.get('attributes',[]) if v['id']==23171 or ('ангар' in a.get('name','').lower() and v['id'] in [4191,4384,9048,10096,6383,85,11254])][:20])
+              skus=[str(p['sku']) for p in products if p.get('sku')]
+              if skus:
+                  for r in api('/v1/product/rating-by-sku',{'skus':skus}).get('products',[]):
+                      print('SCORE',r['sku'],r['rating'],[(x['key'],x['rating']) for x in r['groups']])
