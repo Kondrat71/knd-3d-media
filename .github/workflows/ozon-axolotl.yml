@@ -10,11 +10,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  import:
+  content:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read axolotl listing, fees and stock
+      - name: Update content and verify Ozon results
         shell: python
         env:
           OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
@@ -64,38 +64,176 @@ jobs:
           # NPjJA1E0fGlVd/MGL2rBZNrCWcoQTV/H6iaZfXwElU5T1MS0fFw77L03h4PJh8pQ
           # /cBzTQQXykZB+VQ=
           # -----END CERTIFICATE-----
+
           import base64
           import gzip
+          import re
           import subprocess
           import tempfile
           from pathlib import Path
 
+          def private_report(report):
+              certificate_lines = [line.strip()[2:] for line in Path(__file__).read_text().splitlines()
+                                   if re.match(r'^\s*# (?:[A-Za-z0-9+/]{10,}={0,2}|-----.*CERTIFICATE-----)$', line)]
+              with tempfile.TemporaryDirectory() as directory:
+                  certificate = Path(directory) / 'recipient.pem'
+                  certificate.write_text('\n'.join(certificate_lines) + '\n')
+                  encrypted = subprocess.run(
+                      ['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER', '-aes256', str(certificate)],
+                      input=gzip.compress(json.dumps(report, ensure_ascii=False).encode()),
+                      capture_output=True, check=True,
+                  ).stdout
+              payload = base64.b64encode(encrypted).decode()
+              for offset in range(0, len(payload), 3000):
+                  print('AXO_PRIVATE:' + payload[offset:offset + 3000], flush=True)
+
+          def safe_errors(errors):
+              return [{key: value for key in ('field', 'code', 'level')
+                       if re.fullmatch(r'[\w.\-]{1,80}', value := str(error.get(key, '')))}
+                      for error in (errors or [])]
+
           offer = 'KND-AXO-PAIR'
-          product = api('/v3/product/info/list', {'offer_id': [offer]})['items'][0]
-          sku = int(product.get('sku') or 0)
-          rates = api('/v5/product/info/prices', {
-              'filter': {'offer_id': [offer], 'visibility': 'ALL'}, 'limit': 1,
-          })['items']
-          stock = api('/v2/product/info/stocks-by-warehouse/fbs', {
-              'offer_id': [offer], 'limit': 100, 'cursor': '',
-          }).get('products', [])
-          ratings = api('/v1/product/rating-by-sku', {'skus': [sku]}) if sku else {}
-          row = {
-              'id': product.get('id'), 'sku': sku, 'status': product.get('statuses'),
-              'images': product.get('images'), 'stocks': stock, 'prices': rates,
-              'ratings': ratings, 'promotions': product.get('promotions', []),
+          expected_product = 7139938159
+          expected_sku = 6487393043
+          product_filter = {'offer_id': [offer], 'visibility': 'ALL'}
+
+          def read_product():
+              row = api('/v3/product/info/list', {'offer_id': [offer]})['items'][0]
+              if int(row['id']) != expected_product or int(row.get('sku') or 0) != expected_sku:
+                  raise SystemExit('Offer identity changed')
+              return row
+
+          def read_rating():
+              return api('/v1/product/rating-by-sku', {'skus': [expected_sku]})['products'][0]
+
+          previous = read_product()
+          before = read_rating()
+          if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':
+              private_report({'product': previous, 'rating': before})
+              raise SystemExit(0)
+          original = api('/v4/product/info/attributes', {'filter': product_filter, 'limit': 1})['result'][0]
+          if original.get('offer_id') != offer:
+              raise SystemExit('Catalog returned another offer')
+          prices = api('/v5/product/info/prices', {'filter': product_filter, 'limit': 1})['items'][0]['price']
+          price = str(prices['price'])
+          if float(price) != 299 or prices.get('currency_code') != 'RUB':
+              raise SystemExit('Price changed; content update stopped to preserve seller changes')
+
+          category = {'description_category_id': int(original['description_category_id']), 'type_id': int(original['type_id'])}
+          if category != {'description_category_id': 17027899, 'type_id': 87458885}:
+              raise SystemExit('Catalog category changed')
+
+          catalog_fields = api('/v1/description-category/attribute', category)['result']
+          fields = {field['id']: field for field in catalog_fields}
+          attributes = {}
+          for attr in original['attributes']:
+              if attr.get('complex_id') not in (None, 0):
+                  continue
+              attr_id = int(attr['id'])
+              if attr_id in (21841, 21837):
+                  continue
+              values = []
+              for value in attr['values']:
+                  if value.get('dictionary_value_id'):
+                      values.append({'dictionary_value_id': value['dictionary_value_id']})
+                  elif value.get('value') is not None:
+                      values.append({'value': value['value']})
+              if values:
+                  attributes[attr_id] = {'id': attr_id, 'values': values}
+
+          def literal(field, value):
+              if field in fields and not fields[field].get('dictionary_id'):
+                  attributes[field] = {'id': field, 'values': [{'value': value}]}
+
+          def optional_dictionary(field, terms):
+              if field not in fields or not fields[field].get('dictionary_id') or field in attributes:
+                  return
+              for term in terms:
+                  query = {**category, 'attribute_id': field, 'value': term, 'limit': 30}
+                  items = api('/v1/description-category/attribute/values/search', query)['result']
+                  match = next((value for value in items if value['value'].casefold() == term.casefold()), None)
+                  if match:
+                      attributes[field] = {'id': field, 'values': [{'dictionary_value_id': match['id']}]}
+                      return
+
+          annotation = 'Два подвижных брелка из PETG: синий и ярко-розовый аксолотли. Сегменты сгибаются, на поверхности видна фактура 3D-печати. На каждом брелке металлическая цепочка длиной 3 см и разъёмное кольцо для ключей, сумки или молнии рюкзака. Длина фигурки без фурнитуры около 8,4 см. В комплекте по одному брелку каждого цвета. Содержит мелкие детали.'
+          if not 100 < len(annotation) <= 500:
+              raise SystemExit('Invalid annotation length')
+          literal(4191, annotation)
+          literal(9725, 'Аксолотли')
+          literal(11650, '1')
+          literal(9661, '2')
+          literal(9070, 'false')
+          optional_dictionary(5289, ['Без вставок', 'Без вставки', 'Нет вставки', 'Без камней'])
+          optional_dictionary(9390, ['Взрослая', 'Для взрослых', 'Взрослые'])
+          optional_dictionary(4386, ['Пакет', 'Пакет из ПВХ', 'Пакет с воздушно-пузырчатой плёнкой'])
+          optional_dictionary(9917, ['Животные', 'Животный мир'])
+          optional_dictionary(9912, ['Животные', 'Животный мир'])
+          optional_dictionary(11364, ['Без покрытия'])
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          revision = os.environ['GITHUB_SHA']
+          root = f'https://raw.githubusercontent.com/{repository}/{revision}/photos/axolotl-keychains/'
+          images = [f'{root}{index:02}.jpg' for index in range(1, 9)]
+          video = root + 'overview.mp4'
+          for target in [*images, video]:
+              with urllib.request.urlopen(target, timeout=15) as response:
+                  header = response.read(12)
+                  signature_ok = (header[4:8] == b'ftyp' if target == video else header[:2] == b'\xff\xd8')
+                  if not signature_ok:
+                      raise SystemExit('Media link returned the wrong format')
+
+          def block(image, title, description):
+              link = root + image + '.jpg'
+              return {
+                  'img': {'src': link, 'srcMobile': link, 'alt': title},
+                  'title': {'content': [title], 'size': 'size4', 'align': 'left', 'color': 'color1'},
+                  'text': {'content': [description], 'size': 'size2', 'align': 'left', 'color': 'color1'},
+                  'reverse': False,
+              }
+
+          rich = {'version': 0.3, 'content': [{'widgetName': 'raShowcase', 'type': 'chess', 'blocks': [
+              block('06', 'Два аксолотля в наборе', 'Синий и ярко-розовый брелки из PETG. Можно разделить комплект на две связки ключей.'),
+              block('03', 'Размер фигурки', 'Около 8,4 × 5,1 × 2,8 см без кольца и цепочки. Длина цепочки — 3 см.'),
+              block('04', 'Крепление на рюкзак', 'Разъёмное кольцо можно надеть на подходящий бегунок молнии или петлю сумки.'),
+          ]}]}
+          literal(11254, json.dumps(rich, ensure_ascii=False))
+          complex_attributes = original.get('complex_attributes') or []
+          complex_attributes = [group for group in complex_attributes
+                                if not any(a.get('id') in (21841, 21837) for a in group.get('attributes', []))]
+          complex_attributes.append({'attributes': [
+              {'complex_id': 100001, 'id': 21841, 'values': [{'value': video}]},
+              {'complex_id': 100001, 'id': 21837, 'values': [{'value': 'Аксолотли: цвета, размеры и крепление'}]},
+          ]})
+          item = {
+              **category, 'offer_id': offer, 'name': original['name'], 'attributes': list(attributes.values()),
+              'currency_code': 'RUB', 'vat': str(prices['vat']), 'price': price,
+              'depth': 180, 'width': 130, 'height': 60, 'dimension_unit': 'mm',
+              'weight': 70, 'weight_unit': 'g', 'images': images,
+              'complex_attributes': complex_attributes,
           }
-          data = gzip.compress(json.dumps(row, ensure_ascii=False).encode())
-          # The job emits only ciphertext. The recipient private key is local.
-          certificate_lines = [line.strip()[2:] for line in Path(__file__).read_text().splitlines()
-                               if re.match(r'^\s*# (?:[A-Za-z0-9+/]{10,}={0,2}|-----.*CERTIFICATE-----)$', line)]
-          with tempfile.TemporaryDirectory() as directory:
-              certificate = Path(directory) / 'recipient.pem'
-              certificate.write_text('\n'.join(certificate_lines) + '\n')
-              encrypted = subprocess.run(
-                  ['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER', '-aes256', str(certificate)],
-                  input=data, capture_output=True, check=True,
-              ).stdout
-          payload = base64.b64encode(encrypted).decode()
-          for offset in range(0, len(payload), 3000):
-              print('AXO_PRIVATE:' + payload[offset:offset + 3000])
+          barcodes = previous.get('barcodes', [])
+          if barcodes:
+              item['barcode'] = barcodes[0]
+          task_id = api('/v3/product/import', {'items': [item]})['result']['task_id']
+          for _ in range(15):
+              time.sleep(5)
+              rows = api('/v1/product/import/info', {'task_id': task_id})['result']['items']
+              row = next((entry for entry in rows if entry.get('offer_id') == offer), None)
+              if row and row.get('status') not in ('pending', 'processing'):
+                  print('CONTENT_IMPORT', row['status'], safe_errors(row.get('errors')), flush=True)
+                  if row['status'] not in ('imported', 'success'):
+                      raise SystemExit('Content import was not accepted')
+                  break
+          else:
+              raise SystemExit('Content import is still pending')
+
+          for _ in range(10):
+              time.sleep(8)
+              product = read_product()
+              rating = read_rating()
+              photos = len(product.get('images') or []) + bool(product.get('primary_image'))
+              if photos >= 8 and rating['rating'] > before['rating']:
+                  break
+          private_report({'product': product, 'rating': rating, 'before': before['rating'],
+                          'submitted_fields': sorted(attributes), 'submitted_media_count': len(images)})
