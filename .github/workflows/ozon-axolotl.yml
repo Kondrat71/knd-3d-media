@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Disable paid reviews for this offer and release ten FBS units
+      - name: Release ten FBS units after confirming the paid review opt-out
         shell: python
         env:
           OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
@@ -154,71 +154,11 @@ jobs:
           if any(int(row.get(key) or 0) for row in prior_inventory
                  for key in ('present', 'free_stock', 'reserved')):
               raise SystemExit('Existing FBS stock or reservations; do not reset them')
-          root = 'https://raw.githubusercontent.com/Kondrat71/knd-3d-media/a18acff950c851e2f72dc96a2c646efd859b0949/photos/axolotl-keychains/'
-          if review_status(previous):
-              category = {'description_category_id': int(original['description_category_id']),
-                          'type_id': int(original['type_id'])}
-              if category != {'description_category_id': 17027899, 'type_id': 87458885}:
-                  raise SystemExit('Unexpected catalog category')
-              attributes = []
-              for attr in original['attributes']:
-                  if attr.get('complex_id') not in (None, 0) or attr['id'] in (21837, 21841):
-                      continue
-                  values = []
-                  for value in attr['values']:
-                      if value.get('dictionary_value_id'):
-                          values.append({'dictionary_value_id': value['dictionary_value_id']})
-                      elif value.get('value') is not None:
-                          values.append({'value': value['value']})
-                  if values:
-                      attributes.append({'id': attr['id'], 'values': values})
-              complex_attributes = original.get('complex_attributes') or []
-              complex_attributes = [group for group in complex_attributes
-                                    if not any(a.get('id') in (21841, 21837) for a in group.get('attributes', []))]
-              complex_attributes.append({'attributes': [
-                  {'complex_id': 100001, 'id': 21841, 'values': [{'value': root + 'overview.mp4'}]},
-                  {'complex_id': 100001, 'id': 21837, 'values': [{'value': 'Аксолотли: цвета, размеры и крепление'}]},
-              ]})
-              item = {
-                  **category, 'offer_id': offer, 'name': original['name'], 'attributes': attributes,
-                  'complex_attributes': complex_attributes,
-                  'promotions': [{'type': 'REVIEWS_PROMO', 'operation': 'DISABLE'}],
-                  'currency_code': 'RUB', 'vat': str(price['vat']), 'price': str(price['price']),
-                  'depth': packing[0], 'width': packing[1], 'height': packing[2], 'dimension_unit': 'mm',
-                  'weight': packing[3], 'weight_unit': 'g',
-                  'images': [f'{root}{index:02}.jpg' for index in range(1, 9)],
-              }
-              barcodes = previous.get('barcodes', [])
-              if barcodes:
-                  item['barcode'] = barcodes[0]
-              old_price = float(price.get('old_price') or 0)
-              if old_price > 0:
-                  item['old_price'] = str(price['old_price'])
-              task = api('/v3/product/import', {'items': [item]})['result']['task_id']
-              for _ in range(14):
-                  time.sleep(5)
-                  rows = api('/v1/product/import/info', {'task_id': task})['result']['items']
-                  row = next((entry for entry in rows if entry.get('offer_id') == offer), None)
-                  if row and row.get('status') not in ('pending', 'processing'):
-                      print('REVIEW_SETTING_IMPORT', row['status'], safe_errors(row.get('errors')), flush=True)
-                      if row['status'] not in ('imported', 'success'):
-                          raise SystemExit('Package import not accepted')
-                      break
-              else:
-                  raise SystemExit('Package import pending')
-          for _ in range(10):
-              product = read_product()
-              if review_status(product) is False and not product.get('errors'):
-                  break
-              time.sleep(6)
-          else:
-              private_report({'reviews_enabled': review_status(product), 'errors': safe_errors(product.get('errors')),
-                              'status': product['statuses'], 'stock': warehouse_state(inventory())})
-              raise SystemExit('Paid reviews are not confirmed inactive')
-
+          product = previous
+          current = original
+          if review_status(product) is not False or product.get('errors'):
+              raise SystemExit('Paid reviews must stay inactive through release')
           rating = read_rating()['rating']
-          current = read_attributes()
-          pricing = read_prices()
           price_fields = pricing['price']
           seller_price = Decimal(str(price_fields['marketing_seller_price']))
           declared_price = Decimal(str(price_fields['price']))
