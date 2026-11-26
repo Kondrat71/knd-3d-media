@@ -10,11 +10,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  packaging:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Update the confirmed package height and verify FBS fees
+      - name: Disable paid reviews for this offer and release ten FBS units
         shell: python
         env:
           OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
@@ -106,6 +106,12 @@ jobs:
           def read_rating():
               return api('/v1/product/rating-by-sku', {'skus': [expected_sku]})['products'][0]
 
+          from decimal import Decimal
+
+          def review_status(product):
+              return next((row.get('is_enabled') for row in product.get('promotions', [])
+                           if row.get('type') == 'REVIEWS_PROMO'), None)
+
           def dimensions(row):
               return [int(row[k]) for k in ('depth', 'width', 'height', 'weight')]
 
@@ -125,12 +131,31 @@ jobs:
           if float(price['price']) != 299 or price.get('currency_code') != 'RUB':
               raise SystemExit('Unexpected seller price; preserve the existing offer')
           packing = [180, 130, 40, 70]
-          if dimensions(original) not in ([180, 130, 60, 70], packing):
-              raise SystemExit('Existing package changed; confirm before replacing')
-          root = 'https://raw.githubusercontent.com/Kondrat71/knd-3d-media/a18acff950c851e2f72dc96a2c646efd859b0949/photos/axolotl-keychains/'
           if dimensions(original) != packing:
-              if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':
-                  raise SystemExit('Confirm current import status before another write')
+              raise SystemExit('Confirmed package is not active')
+          if review_status(previous) is None:
+              raise SystemExit('Cannot verify the paid review switch')
+          warehouse_id = 1020005032543350
+
+          def inventory():
+              return api('/v2/product/info/stocks-by-warehouse/fbs', {
+                  'offer_id': [offer], 'limit': 100, 'cursor': '',
+              })['products']
+
+          def warehouse_state(rows):
+              matching = next((row for row in rows if int(row['warehouse_id']) == warehouse_id), {})
+              return {key: int(matching.get(key) or 0) for key in ('present', 'free_stock', 'reserved')}
+
+          prior_inventory = inventory()
+          if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':
+              private_report({'stock': warehouse_state(prior_inventory), 'reviews_enabled': review_status(previous),
+                              'status': previous['statuses'], 'price': pricing})
+              raise SystemExit(0)
+          if any(int(row.get(key) or 0) for row in prior_inventory
+                 for key in ('present', 'free_stock', 'reserved')):
+              raise SystemExit('Existing FBS stock or reservations; do not reset them')
+          root = 'https://raw.githubusercontent.com/Kondrat71/knd-3d-media/a18acff950c851e2f72dc96a2c646efd859b0949/photos/axolotl-keychains/'
+          if review_status(previous):
               category = {'description_category_id': int(original['description_category_id']),
                           'type_id': int(original['type_id'])}
               if category != {'description_category_id': 17027899, 'type_id': 87458885}:
@@ -157,6 +182,7 @@ jobs:
               item = {
                   **category, 'offer_id': offer, 'name': original['name'], 'attributes': attributes,
                   'complex_attributes': complex_attributes,
+                  'promotions': [{'type': 'REVIEWS_PROMO', 'operation': 'DISABLE'}],
                   'currency_code': 'RUB', 'vat': str(price['vat']), 'price': str(price['price']),
                   'depth': packing[0], 'width': packing[1], 'height': packing[2], 'dimension_unit': 'mm',
                   'weight': packing[3], 'weight_unit': 'g',
@@ -174,20 +200,67 @@ jobs:
                   rows = api('/v1/product/import/info', {'task_id': task})['result']['items']
                   row = next((entry for entry in rows if entry.get('offer_id') == offer), None)
                   if row and row.get('status') not in ('pending', 'processing'):
-                      print('PACKAGE_IMPORT', row['status'], safe_errors(row.get('errors')), flush=True)
+                      print('REVIEW_SETTING_IMPORT', row['status'], safe_errors(row.get('errors')), flush=True)
                       if row['status'] not in ('imported', 'success'):
                           raise SystemExit('Package import not accepted')
                       break
               else:
                   raise SystemExit('Package import pending')
-          for _ in range(8):
-              time.sleep(8)
-              current = read_attributes()
-              pricing = read_prices()
-              if dimensions(current) == packing and float(pricing.get('volume_weight') or 999) <= 0.2:
+          for _ in range(10):
+              product = read_product()
+              if review_status(product) is False and not product.get('errors'):
                   break
+              time.sleep(6)
+          else:
+              private_report({'reviews_enabled': review_status(product), 'errors': safe_errors(product.get('errors')),
+                              'status': product['statuses'], 'stock': warehouse_state(inventory())})
+              raise SystemExit('Paid reviews are not confirmed inactive')
+
+          rating = read_rating()['rating']
+          current = read_attributes()
+          pricing = read_prices()
+          price_fields = pricing['price']
+          seller_price = Decimal(str(price_fields['marketing_seller_price']))
+          declared_price = Decimal(str(price_fields['price']))
+          if (rating < 80 or seller_price != 299 or declared_price != 299 or
+                  dimensions(current) != packing or float(pricing['volume_weight']) > 0.2):
+              raise SystemExit('The verified content, price or package changed after reimport')
+
+          fees = pricing['commissions']
+          max_logistics = sum(Decimal(str(fees[field])) for field in (
+              'fbs_direct_flow_trans_max_amount', 'fbs_first_mile_max_amount', 'fbs_deliv_to_customer_amount',
+          ))
+          fee_percent = Decimal(str(fees['sales_percent_fbs'])) / 100
+          acquiring = Decimal(str(pricing['acquiring']))
+          # Use the store model including labor, equipment wear and a returns reserve.
+          fixed_cost = Decimal('107.27')
+          contribution_before_tax = seller_price * (1 - fee_percent) - acquiring - max_logistics - fixed_cost
+          profit = {str(tax): (contribution_before_tax - seller_price * tax).quantize(Decimal('.01'))
+                    for tax in (Decimal('.04'), Decimal('.06'))}
+          if min(profit.values()) <= 0:
+              private_report({'max_fbs': str(max_logistics), 'profit': {k: str(v) for k, v in profit.items()},
+                              'stock': warehouse_state(inventory()), 'reviews_enabled': review_status(product)})
+              raise SystemExit('Maximum-route cost is above the accepted limit')
+
+          active_marketing = (pricing.get('marketing_actions') or {}).get('actions') or []
+          if active_marketing:
+              raise SystemExit('An existing discount action requires review before release')
+          result = api('/v2/products/stocks', {'stocks': [
+              {'offer_id': offer, 'warehouse_id': warehouse_id, 'stock': 10},
+          ]})['result']
+          if len(result) != 1 or not result[0].get('updated'):
+              private_report({'stock_update': result, 'stock': warehouse_state(inventory())})
+              raise SystemExit('Ozon did not accept the FBS allocation')
+          print('FBS_ALLOCATION_ACCEPTED', flush=True)
+          for _ in range(10):
+              stock = warehouse_state(inventory())
+              if stock['present'] == 10 or stock['free_stock'] + stock['reserved'] == 10:
+                  break
+              time.sleep(6)
           product = read_product()
-          rating = read_rating()
-          private_report({'dimensions': dimensions(current), 'status': product['statuses'], 'price': pricing,
-                          'promotions': product.get('promotions', []), 'rating': rating.get('rating'),
-                          'has_stock': (product.get('stocks') or {}).get('has_stock')})
+          private_report({'stock': stock, 'reviews_enabled': review_status(product), 'rating': rating,
+                          'status': product['statuses'], 'max_fbs': str(max_logistics),
+                          'profit': {key: str(value) for key, value in profit.items()},
+                          'price': str(seller_price), 'dimensions': packing, 'sku': expected_sku})
+          if stock['present'] != 10 and stock['free_stock'] + stock['reserved'] != 10:
+              raise SystemExit('Ozon accepted the FBS allocation; final stock read is pending')
