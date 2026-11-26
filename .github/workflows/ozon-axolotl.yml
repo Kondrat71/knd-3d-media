@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Create one Ozon listing and verify the result
+      - name: Read axolotl listing, fees and stock
         shell: python
         env:
           OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
@@ -44,124 +44,58 @@ jobs:
               except urllib.error.HTTPError as error:
                   raise SystemExit(f'Ozon HTTP {error.code} for {path}') from None
 
-          def safe_error(error):
-              return {key: value for key in ('field', 'code', 'level')
-                      if re.fullmatch(r'[\w.\-]{1,80}', value := str(error.get(key, '')))}
+          # -----BEGIN CERTIFICATE-----
+          # MIIDNzCCAh+gAwIBAgIUNzwUVErkdGVOlzDShgGePt4+jGswDQYJKoZIhvcNAQEL
+          # BQAwKzEpMCcGA1UEAwwgS05EIGF4b2xvdGwgcHJpdmF0ZSB2ZXJpZmljYXRpb24w
+          # HhcNMjYxMTI2MTc0NTM2WhcNMjYxMTI4MTc0NTM2WjArMSkwJwYDVQQDDCBLTkQg
+          # YXhvbG90bCBwcml2YXRlIHZlcmlmaWNhdGlvbjCCASIwDQYJKoZIhvcNAQEBBQAD
+          # ggEPADCCAQoCggEBAOKvxwnougLjttfn0VJ7talGXOqD5xUSzmZ7Tp+WUKs7E7eu
+          # 6iJW1cMtPXHciDbQ7/yodYXj0TpbbDXKReSrNJixO0NT69mFINAhlZS2lxTDYRj7
+          # NMYbHK+17NxE6APGIiQCa/aXdHUYO4EXau7qRPey76NgFjEhUWOmbO0pWdM41F1Q
+          # xMUhVluvzaBvNt1SDKZb3a/Q8SO4O+uwkBVhai0BXNI0/CMXNwyDa0L6MB/MsV5E
+          # xMI8agPeT7zr+4F31OljK6i/4Kizr9alPSfbPPFriQ/BYHk15qhP+gboKLPXXAjQ
+          # l9WPxBYAwkJZeXzdkD4PnlA4h7LIWS1OoY3JYBUCAwEAAaNTMFEwHQYDVR0OBBYE
+          # FO+mqu7Q6/TBgREYydbQ267ErS+NMB8GA1UdIwQYMBaAFO+mqu7Q6/TBgREYydbQ
+          # 267ErS+NMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAAMeZyNM
+          # 7zhOlu1NyqJi96UgimoYLLf+WvM31JdCRbpbaL9cEnjIYR3SuL4VyM9aGiqwNheX
+          # 7utHsD3hi5Iar09GQh8wyW8kRCMGvl6vXUILJ1ga3Obxt7oxAn8ZgipmfAZ3XVIr
+          # SOJcZRaLeY+KhWn8oOYyrU7tD5f1sMVCQN51f/peNnu/0Zb56TQXHbX0F9jFL8RD
+          # aGVIO7VTA7yJk8Se5Xc8qfgZFnlkdOA1jPa7LrXAZyhsvouLJk2yIEW1vG1S1e5t
+          # NPjJA1E0fGlVd/MGL2rBZNrCWcoQTV/H6iaZfXwElU5T1MS0fFw77L03h4PJh8pQ
+          # /cBzTQQXykZB+VQ=
+          # -----END CERTIFICATE-----
+          import base64
+          import gzip
+          import subprocess
+          import tempfile
+          from pathlib import Path
 
-          category = {'description_category_id': 17027899, 'type_id': 87458885}
           offer = 'KND-AXO-PAIR'
-          name = 'Парные подвижные брелки «Аксолотли» для ключей и рюкзака, синий и розовый, 2 шт.'
-          packed_weight = 50 + 20
-          price = '299'
-
-          def find_offer():
-              return next(iter(api('/v3/product/info/list', {'offer_id': [offer]})['items']), None)
-
-          def report_offer(product):
-              statuses = product.get('statuses') or {}
-              print('CARD', json.dumps({
-                  'offer': offer,
-                  'sku': product.get('sku'),
-                  'status': statuses.get('status'),
-                  'status_name': statuses.get('status_name'),
-                  'moderation': statuses.get('moderate_status'),
-                  'validation': statuses.get('validation_status'),
-                  'photos': len(product.get('images') or []),
-                  'has_primary_image': bool(product.get('primary_image')),
-                  'errors': [safe_error(error) for error in product.get('errors') or []],
-              }, ensure_ascii=False), flush=True)
-
-          existing = find_offer()
-          if existing:
-              print('EXISTING_OFFER_VERIFIED')
-              report_offer(existing)
-              raise SystemExit(0)
-          if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':
-              raise SystemExit('Previous submission requires verification before another import')
-
-          fields = api('/v1/description-category/attribute', category)['result']
-          field_ids = {field['id'] for field in fields}
-          attributes = []
-
-          def literal(field, value):
-              if field in field_ids:
-                  attributes.append({'id': field, 'values': [{'value': value}]})
-
-          def dictionary(field, groups, required=False, numeric=False):
-              if field not in field_ids:
-                  return False
-              values = []
-              for group in groups:
-                  for term in group:
-                      query = {**category, 'attribute_id': field, 'value': term, 'limit': 30}
-                      matches = api('/v1/description-category/attribute/values/search', query)['result']
-                      match = next((item for item in matches
-                                    if (re.search(rf'(?<!\d){re.escape(term)}(?!\d)', item['value'])
-                                        if numeric else item['value'].casefold() == term.casefold())), None)
-                      if match:
-                          values.append({'dictionary_value_id': match['id']})
-                          break
-                  else:
-                      if required:
-                          raise SystemExit(f'Required dictionary value is unavailable for field {field}')
-              if values:
-                  attributes.append({'id': field, 'values': values})
-              return bool(values)
-
-          brand = 'KND 3D'
-          if not dictionary(85, [[brand]]):
-              brand = 'Нет бренда'
-              dictionary(85, [[brand]], required=True)
-          print('BRAND', brand, flush=True)
-          dictionary(9163, [['Мужской'], ['Женский']], required=True)
-          dictionary(22232, [['7117900000']], required=True, numeric=True)
-          dictionary(5309, [['PET-G пластик', 'Пластик'], ['Металл']])
-          dictionary(10096, [['Синий', 'Голубой'], ['Фуксия', 'Розовый']])
-          dictionary(4389, [['Россия']])
-          attributes.append({'id': 8229, 'values': [{'dictionary_value_id': category['type_id']}]})
-          literal(23536, 'false')
-          literal(4382, '84 × 51 × 28 мм (фигурка)')
-          literal(4383, '50')
-          literal(9661, '2')
-          literal(9048, 'Аксолотли KND 3D')
-          literal(4384, 'Два брелка: один синий и один ярко-розовый. На каждом металлическая цепочка 3 см и разъёмное кольцо.')
-          literal(4191, 'В комплекте два подвижных брелка в виде аксолотлей — синий и ярко-розовый. Можно оставить один себе и подарить второй или отметить разными цветами две связки ключей.\n\nФигурки напечатаны из PETG-пластика. Подвижные звенья позволяют слегка согнуть фигурку. На каждом брелке есть металлическая цепочка длиной 3 см и разъёмное кольцо для ключей, молнии рюкзака или петли сумки. На поверхности видна фактура 3D-печати. Размер фигурки без фурнитуры — примерно 8,4 × 5,1 × 2,8 см.\n\nСодержит мелкие детали. Храните в недоступном для маленьких детей месте.')
-          literal(23171, '#парные_брелки #брелок_аксолотль #брелок_для_рюкзака #брелок_на_ключи #3д_печать')
-          missing = {field['id'] for field in fields if field.get('is_required')} - {a['id'] for a in attributes}
-          if missing:
-              raise SystemExit(f'Missing required category attributes: {sorted(missing)}')
-
-          repository = os.environ['GITHUB_REPOSITORY']
-          media_revision = 'df61c4102c194e5d6009877eaaa550c5c38156f9'
-          root = f'https://raw.githubusercontent.com/{repository}/{media_revision}/photos/axolotl-keychains/'
-          images = [f'{root}{index:02}.jpg' for index in range(1, 5)]
-          for index, url in enumerate(images, start=1):
-              with urllib.request.urlopen(url, timeout=15) as image:
-                  if image.read(2) != b'\xff\xd8':
-                      raise SystemExit(f'Invalid JPEG for image {index}')
-
-          item = {
-              **category, 'offer_id': offer, 'name': name, 'attributes': attributes,
-              'currency_code': 'RUB', 'vat': '0', 'price': price,
-              'depth': 180, 'width': 130, 'height': 60, 'dimension_unit': 'mm',
-              'weight': packed_weight, 'weight_unit': 'g', 'images': images,
+          product = api('/v3/product/info/list', {'offer_id': [offer]})['items'][0]
+          sku = int(product.get('sku') or 0)
+          rates = api('/v5/product/info/prices', {
+              'filter': {'offer_id': [offer], 'visibility': 'ALL'}, 'limit': 1,
+          })['items']
+          stock = api('/v2/product/info/stocks-by-warehouse/fbs', {
+              'offer_id': [offer], 'limit': 100, 'cursor': '',
+          }).get('products', [])
+          ratings = api('/v1/product/rating-by-sku', {'skus': [sku]}) if sku else {}
+          row = {
+              'id': product.get('id'), 'sku': sku, 'status': product.get('statuses'),
+              'images': product.get('images'), 'stocks': stock, 'prices': rates,
+              'ratings': ratings, 'promotions': product.get('promotions', []),
           }
-          task_id = api('/v3/product/import', {'items': [item]})['result']['task_id']
-          print('IMPORT_SUBMITTED', flush=True)
-          for _ in range(12):
-              time.sleep(5)
-              rows = api('/v1/product/import/info', {'task_id': task_id})['result']['items']
-              row = next((item for item in rows if item.get('offer_id') == offer), None)
-              if row and row.get('status') not in ('pending', 'processing'):
-                  print('IMPORT_RESULT', row['status'], [safe_error(error) for error in row.get('errors') or []], flush=True)
-                  if row['status'] not in ('imported', 'success'):
-                      raise SystemExit('Import requires review')
-                  break
-          for _ in range(10):
-              product = find_offer()
-              if product:
-                  report_offer(product)
-                  break
-              time.sleep(6)
-          else:
-              raise SystemExit('Import accepted by API, but the listing is not yet visible')
+          data = gzip.compress(json.dumps(row, ensure_ascii=False).encode())
+          # The job emits only ciphertext. The recipient private key is local.
+          certificate_lines = [line.strip()[2:] for line in Path(__file__).read_text().splitlines()
+                               if re.match(r'^\s*# (?:[A-Za-z0-9+/]{10,}={0,2}|-----.*CERTIFICATE-----)$', line)]
+          with tempfile.TemporaryDirectory() as directory:
+              certificate = Path(directory) / 'recipient.pem'
+              certificate.write_text('\n'.join(certificate_lines) + '\n')
+              encrypted = subprocess.run(
+                  ['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER', '-aes256', str(certificate)],
+                  input=data, capture_output=True, check=True,
+              ).stdout
+          payload = base64.b64encode(encrypted).decode()
+          for offset in range(0, len(payload), 3000):
+              print('AXO_PRIVATE:' + payload[offset:offset + 3000])
