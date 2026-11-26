@@ -5,13 +5,16 @@ on:
     paths: ['.github/workflows/ozon-axolotl.yml']
 
 permissions: {}
+concurrency:
+  group: ozon-axolotl-import
+  cancel-in-progress: false
 
 jobs:
-  prepare:
+  import:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
-      - name: Check Ozon category and media before import
+      - name: Create one Ozon listing and verify the result
         shell: python
         env:
           OZON_CLIENT_ID: ${{ secrets.OZON_CLIENT_ID }}
@@ -19,6 +22,8 @@ jobs:
         run: |
           import json
           import os
+          import re
+          import time
           import urllib.error
           import urllib.request
 
@@ -30,33 +35,133 @@ jobs:
               }
               request = urllib.request.Request(
                   'https://api-seller.ozon.ru' + path,
-                  json.dumps(body).encode(),
+                  json.dumps(body, ensure_ascii=False).encode(),
                   headers,
               )
               try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
+                  with urllib.request.urlopen(request, timeout=25) as response:
                       return json.load(response)
               except urllib.error.HTTPError as error:
                   raise SystemExit(f'Ozon HTTP {error.code} for {path}') from None
 
+          def safe_error(error):
+              return {key: value for key in ('field', 'code', 'level')
+                      if re.fullmatch(r'[\w.\-]{1,80}', value := str(error.get(key, '')))}
+
           category = {'description_category_id': 17027899, 'type_id': 87458885}
+          offer = 'KND-AXO-PAIR'
+          name = 'Парные подвижные брелки «Аксолотли» для ключей и рюкзака, синий и розовый, 2 шт.'
+          packed_weight = 50 + 20
+          price = '299'
+
+          def find_offer():
+              return next(iter(api('/v3/product/info/list', {'offer_id': [offer]})['items']), None)
+
+          def report_offer(product):
+              statuses = product.get('statuses') or {}
+              print('CARD', json.dumps({
+                  'offer': offer,
+                  'sku': product.get('sku'),
+                  'status': statuses.get('status'),
+                  'status_name': statuses.get('status_name'),
+                  'moderation': statuses.get('moderate_status'),
+                  'validation': statuses.get('validation_status'),
+                  'photos': len(product.get('images') or []),
+                  'has_primary_image': bool(product.get('primary_image')),
+                  'errors': [safe_error(error) for error in product.get('errors') or []],
+              }, ensure_ascii=False), flush=True)
+
+          existing = find_offer()
+          if existing:
+              print('EXISTING_OFFER_VERIFIED')
+              report_offer(existing)
+              raise SystemExit(0)
+          if os.environ.get('GITHUB_RUN_ATTEMPT') != '1':
+              raise SystemExit('Previous submission requires verification before another import')
+
           fields = api('/v1/description-category/attribute', category)['result']
-          if not fields:
-              raise SystemExit('The keychain category returned no attributes')
-          print('KEYCHAIN_FIELDS', json.dumps([
-              [field['id'], field['name'], field.get('is_required', False), field.get('dictionary_id', 0)]
-              for field in fields
-          ], ensure_ascii=False))
-          items = api('/v3/product/info/list', {'offer_id': ['KND-AXO-PAIR']})['items']
-          if items:
-              raise SystemExit('Offer already exists. Check the existing card before importing.')
+          field_ids = {field['id'] for field in fields}
+          attributes = []
+
+          def literal(field, value):
+              if field in field_ids:
+                  attributes.append({'id': field, 'values': [{'value': value}]})
+
+          def dictionary(field, groups, required=False, numeric=False):
+              if field not in field_ids:
+                  return False
+              values = []
+              for group in groups:
+                  for term in group:
+                      query = {**category, 'attribute_id': field, 'value': term, 'limit': 30}
+                      matches = api('/v1/description-category/attribute/values/search', query)['result']
+                      match = next((item for item in matches
+                                    if (re.search(rf'(?<!\d){re.escape(term)}(?!\d)', item['value'])
+                                        if numeric else item['value'].casefold() == term.casefold())), None)
+                      if match:
+                          values.append({'dictionary_value_id': match['id']})
+                          break
+                  else:
+                      if required:
+                          raise SystemExit(f'Required dictionary value is unavailable for field {field}')
+              if values:
+                  attributes.append({'id': field, 'values': values})
+              return bool(values)
+
+          brand = 'KND 3D'
+          if not dictionary(85, [[brand]]):
+              brand = 'Нет бренда'
+              dictionary(85, [[brand]], required=True)
+          print('BRAND', brand, flush=True)
+          dictionary(9163, [['Мужской'], ['Женский']], required=True)
+          dictionary(22232, [['7117900000']], required=True, numeric=True)
+          dictionary(5309, [['PET-G пластик', 'Пластик'], ['Металл']])
+          dictionary(10096, [['Синий', 'Голубой'], ['Фуксия', 'Розовый']])
+          dictionary(4389, [['Россия']])
+          attributes.append({'id': 8229, 'values': [{'dictionary_value_id': category['type_id']}]})
+          literal(23536, 'false')
+          literal(4382, '84 × 51 × 28 мм (фигурка)')
+          literal(4383, '50')
+          literal(9661, '2')
+          literal(9048, 'Аксолотли KND 3D')
+          literal(4384, 'Два брелка: один синий и один ярко-розовый. На каждом металлическая цепочка 3 см и разъёмное кольцо.')
+          literal(4191, 'В комплекте два подвижных брелка в виде аксолотлей — синий и ярко-розовый. Можно оставить один себе и подарить второй или отметить разными цветами две связки ключей.\n\nФигурки напечатаны из PETG-пластика. Подвижные звенья позволяют слегка согнуть фигурку. На каждом брелке есть металлическая цепочка длиной 3 см и разъёмное кольцо для ключей, молнии рюкзака или петли сумки. На поверхности видна фактура 3D-печати. Размер фигурки без фурнитуры — примерно 8,4 × 5,1 × 2,8 см.\n\nСодержит мелкие детали. Храните в недоступном для маленьких детей месте.')
+          literal(23171, '#парные_брелки #брелок_аксолотль #брелок_для_рюкзака #брелок_на_ключи #3д_печать')
+          missing = {field['id'] for field in fields if field.get('is_required')} - {a['id'] for a in attributes}
+          if missing:
+              raise SystemExit(f'Missing required category attributes: {sorted(missing)}')
 
           repository = os.environ['GITHUB_REPOSITORY']
-          revision = os.environ['GITHUB_SHA']
-          root = f'https://raw.githubusercontent.com/{repository}/{revision}/photos/axolotl-keychains/'
-          for index in range(1, 5):
-              with urllib.request.urlopen(f'{root}{index:02}.jpg', timeout=15) as image:
+          media_revision = 'df61c4102c194e5d6009877eaaa550c5c38156f9'
+          root = f'https://raw.githubusercontent.com/{repository}/{media_revision}/photos/axolotl-keychains/'
+          images = [f'{root}{index:02}.jpg' for index in range(1, 5)]
+          for index, url in enumerate(images, start=1):
+              with urllib.request.urlopen(url, timeout=15) as image:
                   if image.read(2) != b'\xff\xd8':
                       raise SystemExit(f'Invalid JPEG for image {index}')
-          print('FOUR_IMAGES_VERIFIED')
-          print('WAITING_FOR_MEASURED_PACKED_WEIGHT')
+
+          item = {
+              **category, 'offer_id': offer, 'name': name, 'attributes': attributes,
+              'currency_code': 'RUB', 'vat': '0', 'price': price,
+              'depth': 180, 'width': 130, 'height': 60, 'dimension_unit': 'mm',
+              'weight': packed_weight, 'weight_unit': 'g', 'images': images,
+          }
+          task_id = api('/v3/product/import', {'items': [item]})['result']['task_id']
+          print('IMPORT_SUBMITTED', flush=True)
+          for _ in range(12):
+              time.sleep(5)
+              rows = api('/v1/product/import/info', {'task_id': task_id})['result']['items']
+              row = next((item for item in rows if item.get('offer_id') == offer), None)
+              if row and row.get('status') not in ('pending', 'processing'):
+                  print('IMPORT_RESULT', row['status'], [safe_error(error) for error in row.get('errors') or []], flush=True)
+                  if row['status'] not in ('imported', 'success'):
+                      raise SystemExit('Import requires review')
+                  break
+          for _ in range(10):
+              product = find_offer()
+              if product:
+                  report_offer(product)
+                  break
+              time.sleep(6)
+          else:
+              raise SystemExit('Import accepted by API, but the listing is not yet visible')
