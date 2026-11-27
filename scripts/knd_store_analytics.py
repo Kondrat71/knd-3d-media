@@ -29,7 +29,7 @@ def post(path, data):
     global last_analytics_request
     if path not in ALLOWED:
         raise ValueError("Unknown endpoint")
-    for attempt in range(4):
+    for attempt in range(3):
         if path == "/v1/analytics/data":
             if last_analytics_request is not None:
                 time.sleep(max(0, 60.1-(time.monotonic()-last_analytics_request)))
@@ -41,13 +41,18 @@ def post(path, data):
             raw=res.read()
             if res.status==200:
                 return json.loads(raw)
-            if res.status not in (429,500,502,503,504) or attempt==3:
+            if res.status not in (429,500,502,503,504) or attempt==2:
                 try:
                     msg=str(json.loads(raw).get("message",""))[:220]
                 except ValueError:msg=""
                 raise ApiError(res.status,msg)
+            delay = max(1.5*(1+attempt), float(res.getheader("Retry-After") or 0))
+        except (OSError, http.client.HTTPException):
+            if attempt == 2:
+                raise ApiError("connection", "Connection did not complete") from None
+            delay = 1.5*(1+attempt)
         finally:conn.close()
-        time.sleep(1.5*(1+attempt))
+        time.sleep(delay)
 def attempt(label,fn):
     try:return fn()
     except ApiError as e:failed[label]={"status":e.args[0],"message":e.args[1]}
@@ -77,20 +82,17 @@ def catalog():
     for i in range(0,len(ids),1000):
         result.extend(pick(r,"id sku name offer_id statuses created_at updated_at is_archived is_autoarchived is_discounted price min_price old_price currency_code visibility_details stocks promotions primary_image") for r in post("/v3/product/info/list",{"product_id":ids[i:i+1000]})["items"])
     return result
-out["catalog"]=attempt("catalog",catalog)
-out["prices"]=attempt("prices",lambda:pages("/v5/product/info/prices",{"filter":{"visibility":"ALL"},"limit":1000},"items"))
 def stock():
     if out["catalog"] is None:raise ValueError("Catalog unavailable")
     ids=[x["offer_id"] for x in out["catalog"]];result=[]
     for i in range(0,len(ids),100):
         result+=pages("/v2/product/info/stocks-by-warehouse/fbs",{"offer_id":ids[i:i+100],"limit":1000},"products")
     return result
-out["stocks"]=attempt("stocks",stock)
 def utc(dt):return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")
 def cutoff(first,last):
-    start=datetime.combine(first,day_time.min,MOSCOW)
+    start=first if isinstance(first,datetime) else datetime.combine(first,day_time.min,MOSCOW)
     end=min(datetime.combine(last,day_time.max,MOSCOW),now)
-    if last == periods["previous"][1]:
+    if config_line is None and last == periods["previous"][1]:
         end = now - timedelta(days=28)
     return utc(start),utc(end)
 def orders(first,last):
@@ -134,40 +136,98 @@ def cash(first,last):
         page+=1
 def balance(first,last):
     return post("/v1/finance/balance",{"date_from":str(first),"date_to":str(last)})
-out["balance"]={}
-out["funnel_checks"]={}
-for label,(first,last) in periods.items():
-    out["orders"][label]=attempt("orders."+label,lambda:orders(first,last))
-    out["returns"][label]=attempt("returns."+label,lambda:returns(first,last))
-    out["cash"][label]=attempt("cash."+label,lambda:cash(first,last))
-    out["balance"][label]=attempt("balance."+label,lambda:balance(first,last))
-    combined=["hits_view_search","hits_view_pdp","hits_tocart_pdp","hits_tocart","ordered_units","delivered_units","returns","cancellations","revenue"]
-    funnel=attempt("funnel."+label,lambda:analytics(first,last,combined))
-    if funnel is None:
-        funnel=attempt("funnel.basic."+label,lambda:analytics(first,last,["ordered_units","revenue"]))
-    out["funnel"][label]=funnel
-out["finance"]["types"]=attempt("finance.types",lambda:post("/v1/finance/accrual/types",{}))
-by_day=out["finance"]["by_day"]
 def daily(day):
     return pages("/v1/finance/accrual/by-day",{"date":day,"last_id":""},"accruals","last_id")
-for offset in range(55,-1,-1):
-    day=(today-timedelta(days=offset)).isoformat()
-    by_day[day]=attempt("finance."+day,lambda:daily(day))
-postings={o.get("posting_number") for rows in out["orders"].values() for o in rows or []}
-postings.update(o.get("unit_number") for rows in by_day.values() for o in rows or [] if o.get("accrued_category")=="POSTING")
-numbers=sorted(x for x in postings if x)
-def detail():
-    return [post("/v1/finance/accrual/postings",{"posting_numbers":numbers[i:i+100]}) for i in range(0,len(numbers),100)]
-out["finance"]["details"]=attempt("finance.details",detail)
-out["search_queries"]={}
-for text in ("маркировка кабеля","держатель для крышек","брелок аксолотль"):
-    key="search."+text
-    out["search_queries"][text]=attempt(key,lambda:post("/v1/search-queries/text",{"limit":5,"offset":0,"text":text}))
-    if failed.get(key,{}).get("status") in (401,403):break
-if out["catalog"]:
-    a,b=cutoff(periods["current"][0],today-timedelta(days=1))
-    skus=[str(x["sku"]) for x in out["catalog"] if x.get("sku")]
-    out["product_queries"]=attempt("product_queries",lambda:post("/v1/analytics/product-queries",{"date_from":a,"date_to":b,"page_size":1000,"page":0,"skus":skus}))
+
+def incremental(config):
+    def stamp(key):
+        value=datetime.fromisoformat(config[key])
+        if value.tzinfo is None or value > now:
+            raise ValueError("Invalid synchronization boundary")
+        return value
+    def day(key):
+        value=datetime.fromisoformat(config[key]).date()
+        if value > today or (today-value).days > 90:
+            raise ValueError("Invalid settlement boundary")
+        return value
+    def keep_newest(rows, key):
+        indexed={}
+        for row in rows:
+            indexed[row[key]]=row
+        return list(indexed.values())
+    order_from=stamp("orders")
+    return_from=stamp("returns")
+    finance_from=day("finance")
+    cash_from=day("cash")
+    out["mode"]="incremental"
+    out.pop("periods",None)
+    out.pop("funnel",None)
+    out["windows"]={"orders": order_from.isoformat(), "returns": return_from.isoformat(),
+                    "finance":str(finance_from), "cash":str(cash_from)}
+    def fresh_orders():
+        return orders(order_from, today)
+    recent=attempt("orders.current",fresh_orders)
+    out["orders"]["current"]=recent
+    open_days=sorted({datetime.fromisoformat(x).date() for x in config.get("open_days", [])})
+    out["orders"]["open_days"]={}
+    for d in open_days:
+        if d>=order_from.astimezone(MOSCOW).date():
+            continue
+        result=attempt("orders.open."+str(d),lambda:orders(d,d))
+        out["orders"]["open_days"][str(d)]=result
+    out["returns"]["current"]=attempt("returns.current",lambda:returns(return_from,today))
+    out["cash"]["current"]=attempt("cash.current",lambda:cash(cash_from,today))
+    out["balance"]={"current":attempt("balance.current",lambda:balance(finance_from,today))}
+    by_day=out["finance"]["by_day"]
+    for offset in range((today-finance_from).days,-1,-1):
+        target=str(today-timedelta(days=offset))
+        by_day[target]=attempt("finance."+target,lambda:daily(target))
+    parents=[x for rows in by_day.values() if isinstance(rows,list) for x in rows]
+    if parents:
+        out["finance"]["types"]=attempt("finance.types",lambda:post("/v1/finance/accrual/types",{}))
+    # By-day records already contain signed total and line items. Detail is queried
+    # separately only by the weekly reconcile if the components cannot explain it.
+
+config_line=next((line[9:] for line in open("analytics/recipient.pem",encoding="ascii")
+                  if line.startswith("KND_SYNC ")),None)
+out["catalog"]=attempt("catalog",catalog)
+out["prices"]=attempt("prices",lambda:pages("/v5/product/info/prices",{"filter":{"visibility":"ALL"},"limit":1000},"items"))
+out["stocks"]=attempt("stocks",stock)
+if config_line is not None:
+    incremental(json.loads(config_line))
+else:
+    out["balance"]={}
+    out["funnel_checks"]={}
+    for label,(first,last) in periods.items():
+        out["orders"][label]=attempt("orders."+label,lambda:orders(first,last))
+        out["returns"][label]=attempt("returns."+label,lambda:returns(first,last))
+        out["cash"][label]=attempt("cash."+label,lambda:cash(first,last))
+        out["balance"][label]=attempt("balance."+label,lambda:balance(first,last))
+        combined=["hits_view_search","hits_view_pdp","hits_tocart_pdp","hits_tocart","ordered_units","delivered_units","returns","cancellations","revenue"]
+        funnel=attempt("funnel."+label,lambda:analytics(first,last,combined))
+        if funnel is None:
+            funnel=attempt("funnel.basic."+label,lambda:analytics(first,last,["ordered_units","revenue"]))
+        out["funnel"][label]=funnel
+    out["finance"]["types"]=attempt("finance.types",lambda:post("/v1/finance/accrual/types",{}))
+    by_day=out["finance"]["by_day"]
+    for offset in range(55,-1,-1):
+        day=(today-timedelta(days=offset)).isoformat()
+        by_day[day]=attempt("finance."+day,lambda:daily(day))
+    postings={o.get("posting_number") for rows in out["orders"].values() for o in rows or []}
+    postings.update(o.get("unit_number") for rows in by_day.values() for o in rows or [] if o.get("accrued_category")=="POSTING")
+    numbers=sorted(x for x in postings if x)
+    def detail():
+        return [post("/v1/finance/accrual/postings",{"posting_numbers":numbers[i:i+100]}) for i in range(0,len(numbers),100)]
+    out["finance"]["details"]=attempt("finance.details",detail)
+    out["search_queries"]={}
+    for text in ("маркировка кабеля","держатель для крышек","брелок аксолотль"):
+        key="search."+text
+        out["search_queries"][text]=attempt(key,lambda:post("/v1/search-queries/text",{"limit":5,"offset":0,"text":text}))
+        if failed.get(key,{}).get("status") in (401,403):break
+    if out["catalog"]:
+        a,b=cutoff(periods["current"][0],today-timedelta(days=1))
+        skus=[str(x["sku"]) for x in out["catalog"] if x.get("sku")]
+        out["product_queries"]=attempt("product_queries",lambda:post("/v1/analytics/product-queries",{"date_from":a,"date_to":b,"page_size":1000,"page":0,"skus":skus}))
 blob=gzip.compress(json.dumps(out,ensure_ascii=False,default=str).encode())
 proc=subprocess.run(["openssl","cms","-encrypt","-aes-256-cbc","-binary","-outform","DER","analytics/recipient.pem"],input=blob,capture_output=True,check=True)
 encoded=base64.b64encode(proc.stdout).decode()
