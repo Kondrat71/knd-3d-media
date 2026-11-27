@@ -150,11 +150,6 @@ def incremental(config):
         if value > today or (today-value).days > 90:
             raise ValueError("Invalid settlement boundary")
         return value
-    def keep_newest(rows, key):
-        indexed={}
-        for row in rows:
-            indexed[row[key]]=row
-        return list(indexed.values())
     order_from=stamp("orders")
     return_from=stamp("returns")
     finance_from=day("finance")
@@ -164,14 +159,13 @@ def incremental(config):
     out.pop("funnel",None)
     out["windows"]={"orders": order_from.isoformat(), "returns": return_from.isoformat(),
                     "finance":str(finance_from), "cash":str(cash_from)}
-    def fresh_orders():
-        return orders(order_from, today)
-    recent=attempt("orders.current",fresh_orders)
-    out["orders"]["current"]=recent
     open_days=sorted({datetime.fromisoformat(x).date() for x in config.get("open_days", [])})
+    order_date=order_from.astimezone(MOSCOW).date()
+    first_query=order_date if order_date in open_days else order_from
+    out["orders"]["current"]=attempt("orders.current",lambda:orders(first_query,today))
     out["orders"]["open_days"]={}
     for d in open_days:
-        if d>=order_from.astimezone(MOSCOW).date():
+        if d>=order_date:
             continue
         result=attempt("orders.open."+str(d),lambda:orders(d,d))
         out["orders"]["open_days"][str(d)]=result
